@@ -15,6 +15,9 @@ jobs:
         with:
           channel: stable
 
+      # 🔥 THIS IS THE FIX
+      - run: flutter create .
+
       - run: flutter pub get
       - run: flutter build apk --release
 
