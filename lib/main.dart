@@ -5,123 +5,227 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(const SkyGenApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class SkyGenApp extends StatelessWidget {
+  const SkyGenApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
+    return MaterialApp(
       debugShowCheckedModeBanner: false,
-      home: SkyGenAI(),
+      theme: ThemeData.dark(useMaterial3: true),
+      home: const ImageAI(),
     );
   }
 }
 
-class SkyGenAI extends StatefulWidget {
-  const SkyGenAI({super.key});
+class ImageAI extends StatefulWidget {
+  const ImageAI({super.key});
 
   @override
-  State<SkyGenAI> createState() => _SkyGenAIState();
+  State<ImageAI> createState() => _ImageAIState();
 }
 
-class _SkyGenAIState extends State<SkyGenAI> {
-  TextEditingController prompt = TextEditingController();
+class _ImageAIState extends State<ImageAI> {
+  final TextEditingController prompt = TextEditingController();
 
   bool loading = false;
-  String status = "";
   String imageUrl = "";
-  String? taskId;
+  String status = "Describe what you want to create";
 
-  /// generate image
   Future generateImage() async {
+    if (prompt.text.trim().isEmpty) return;
+
     setState(() {
       loading = true;
-      status = "Generating image...";
       imageUrl = "";
+      status = "Generating image...";
     });
 
-    final url = Uri.parse(
-      "https://gen-z-image.vercel.app/gen"
-      "?q=${Uri.encodeComponent(prompt.text)}"
-      "&scale=1:1"
-      "&resolution=1080p",
+    final res = await http.post(
+      Uri.parse("https://gen-z-image.vercel.app/gen"),
+      headers: {"Content-Type": "application/json"},
+      body: jsonEncode({"q": prompt.text}),
     );
 
-    final res = await http.get(url);
     final data = jsonDecode(res.body);
-
-    taskId = data["results"]["task_id"];
+    final id = data["results"]["id"];
 
     await Future.delayed(const Duration(seconds: 6));
-    await checkResult();
+    await checkImage(id);
   }
 
-  /// check result
-  Future checkResult() async {
-    final url = Uri.parse(
-      "https://gen-z-image.vercel.app/check?task_id=$taskId",
+  Future checkImage(String id) async {
+    final res = await http.get(
+      Uri.parse("https://gen-z-image.vercel.app/check?id=$id"),
     );
 
-    final res = await http.get(url);
     final data = jsonDecode(res.body);
 
-    imageUrl = data["results"]["urls"][0];
-
     setState(() {
+      imageUrl = data["results"]["urls"][0];
       loading = false;
-      status = "Done ✅";
+      status = "Done";
     });
   }
 
-  /// download image
   Future downloadImage() async {
     final dir = await getExternalStorageDirectory();
-    final file =
-        File("${dir!.path}/SkyGen_${DateTime.now().millisecondsSinceEpoch}.png");
+    final file = File(
+      "${dir!.path}/SkyGen_${DateTime.now().millisecondsSinceEpoch}.png",
+    );
 
     final res = await http.get(Uri.parse(imageUrl));
     await file.writeAsBytes(res.bodyBytes);
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Image downloaded ✅")),
+      const SnackBar(content: Text("Image saved")),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("SkyGen AI")),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(children: [
-          TextField(
-            controller: prompt,
-            decoration: const InputDecoration(
-              hintText: "Describe your image...",
-              border: OutlineInputBorder(),
+      backgroundColor: const Color(0xff0b0b0b),
+      body: SafeArea(
+        child: Column(
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 18),
+              child: Text(
+                "SkyGen AI",
+                style: TextStyle(
+                  fontSize: 26,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1,
+                ),
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          ElevatedButton(
-              onPressed: loading ? null : generateImage,
-              child: const Text("Generate")),
-          const SizedBox(height: 20),
-          if (loading) const CircularProgressIndicator(),
-          Text(status),
-          const SizedBox(height: 20),
-          if (imageUrl.isNotEmpty)
-            Column(
-              children: [
-                Image.network(imageUrl),
-                ElevatedButton(
-                    onPressed: downloadImage,
-                    child: const Text("Download Image"))
-              ],
-            )
-        ]),
+
+            Expanded(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 400),
+                child: loading
+                    ? Column(
+                        key: const ValueKey("loading"),
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          SizedBox(
+                            height: 60,
+                            width: 60,
+                            child: CircularProgressIndicator(strokeWidth: 4),
+                          ),
+                          SizedBox(height: 18),
+                          Text(
+                            "Creating image with AI...",
+                            style: TextStyle(color: Colors.white70),
+                          )
+                        ],
+                      )
+                    : imageUrl.isEmpty
+                        ? Center(
+                            key: const ValueKey("empty"),
+                            child: Text(
+                              status,
+                              style: const TextStyle(
+                                color: Colors.white54,
+                                fontSize: 16,
+                              ),
+                            ),
+                          )
+                        : Column(
+                            key: const ValueKey("image"),
+                            children: [
+                              Expanded(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(24),
+                                    child: Image.network(
+                                      imageUrl,
+                                      fit: BoxFit.cover,
+                                      width: double.infinity,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 14),
+                                child: ElevatedButton(
+                                  style: ElevatedButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 40,
+                                      vertical: 14,
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(18),
+                                    ),
+                                  ),
+                                  onPressed: downloadImage,
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.download),
+                                      SizedBox(width: 10),
+                                      Text(
+                                        "Download Image",
+                                        style: TextStyle(fontSize: 16),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              )
+                            ],
+                          ),
+              ),
+            ),
+
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: const BoxDecoration(
+                color: Color(0xff141414),
+                borderRadius: BorderRadius.vertical(
+                  top: Radius.circular(24),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: prompt,
+                      style: const TextStyle(color: Colors.white),
+                      maxLines: 3,
+                      minLines: 1,
+                      decoration: const InputDecoration(
+                        hintText: "Type your image prompt...",
+                        hintStyle: TextStyle(color: Colors.white54),
+                        border: InputBorder.none,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: loading ? null : generateImage,
+                    child: Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Colors.greenAccent.withOpacity(0.9),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.arrow_upward,
+                        color: Colors.black,
+                      ),
+                    ),
+                  )
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
