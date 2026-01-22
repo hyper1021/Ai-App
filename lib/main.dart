@@ -6,11 +6,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:image_picker/image_picker.dart'; // Keep for camera/fallback
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:flutter_highlighter/flutter_highlighter.dart';
-import 'package:flutter_highlighter/themes/atom-one-dark.dart';
+import 'package:flutter_highlight/flutter_highlight.dart';
+import 'package:flutter_highlight/themes/atom-one-dark.dart';
+import 'package:photo_manager/photo_manager.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:markdown/markdown.dart' as md;
 
 // ---------------------------------------------------------------------------
 // MAIN ENTRY POINT
@@ -44,7 +47,7 @@ class SkyGenApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'SkyGen',
+      title: 'SkyGen AI',
       debugShowCheckedModeBanner: false,
       themeMode: ThemeMode.light,
       theme: ThemeData(
@@ -77,54 +80,53 @@ class SkyGenApp extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// MODELS
+// DATA MODELS
 // ---------------------------------------------------------------------------
 
-enum MessageType { user, ai, offline }
-enum GenStatus { waiting, generating, completed, error, stopped }
-enum AIModel { skyGen, skyImg, imgDescriber, skyCoder }
+enum MessageType { user, ai }
+enum GenStatus { waiting, generating, streaming, completed, error, stopped }
 
 class ChatMessage {
   final String id;
-  String text;
+  final String text; // The full text (final)
+  String visibleText; // For typing effect
   final MessageType type;
   String? imageUrl; 
-  String? attachedImageUrl;
+  String? attachedImageUrl; 
   GenStatus status;
   final int timestamp;
-  bool isAnimated; // Controls typing effect
 
   ChatMessage({
     required this.id,
     required this.text,
+    String? visibleText,
     required this.type,
     this.imageUrl,
     this.attachedImageUrl,
     this.status = GenStatus.completed,
     required this.timestamp,
-    this.isAnimated = false,
-  });
+  }) : visibleText = visibleText ?? (status == GenStatus.completed ? text : "");
 
   Map<String, dynamic> toMap() => {
     'id': id,
     'text': text,
+    'visibleText': visibleText,
     'type': type.index,
     'imageUrl': imageUrl,
     'attachedImageUrl': attachedImageUrl,
     'status': status.index,
     'timestamp': timestamp,
-    'isAnimated': false, // Never save animation state as true
   };
 
   factory ChatMessage.fromMap(Map<String, dynamic> map) => ChatMessage(
     id: map['id'],
     text: map['text'],
+    visibleText: map['visibleText'],
     type: MessageType.values[map['type']],
     imageUrl: map['imageUrl'],
     attachedImageUrl: map['attachedImageUrl'],
     status: GenStatus.values[map['status']],
     timestamp: map['timestamp'],
-    isAnimated: false,
   );
 }
 
@@ -161,7 +163,7 @@ class ChatSession {
 }
 
 // ---------------------------------------------------------------------------
-// MAIN CHAT SCREEN
+// CHAT SCREEN (MAIN UI)
 // ---------------------------------------------------------------------------
 
 class ChatScreen extends StatefulWidget {
@@ -171,54 +173,63 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   final TextEditingController _promptController = TextEditingController();
-  final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
-  // Data
+  // Logic Variables
   List<ChatSession> _sessions = [];
+  List<String> _myStuffImages = []; // Stores URLs of generated images
   String _currentSessionId = "";
-  File? _storageFile;
-
-  // Logic
+  
   bool _isGenerating = false;
   String? _currentGenId;
   bool _stopRequested = false;
-  bool _isSearching = false; // Drawer search state
-  
-  // New Features Variables
-  AIModel _selectedModel = AIModel.skyGen;
+  File? _storageFile;
+
+  // --- NEW FEATURES VARIABLES ---
+  // Models: SkyGen, Sky-Img, Img Describer, Sky Coder
+  String _selectedModel = "SkyGen"; 
   File? _pickedImage;
   String? _uploadedImgBBUrl;
   bool _isUploadingImage = false;
+  
+  // Search Drawer
+  bool _isSearchExpanded = false;
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = "";
 
   @override
   void initState() {
     super.initState();
     _initStorage();
-    _promptController.addListener(() => setState(() {}));
   }
 
   @override
   void dispose() {
     _promptController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
-  // --- STORAGE & SESSION ---
+  // --- STORAGE & SESSION MANAGEMENT ---
 
   Future<void> _initStorage() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      _storageFile = File('${dir.path}/skygen_data_v5.json');
+      _storageFile = File('${dir.path}/skygen_data_v4.json');
       
       if (await _storageFile!.exists()) {
         final content = await _storageFile!.readAsString();
-        final List<dynamic> jsonList = jsonDecode(content);
+        final Map<String, dynamic> jsonData = jsonDecode(content);
+        
+        final List<dynamic> sessionList = jsonData['sessions'] ?? [];
+        final List<dynamic> imgList = jsonData['myStuff'] ?? [];
+
         setState(() {
-          _sessions = jsonList.map((e) => ChatSession.fromMap(e)).toList();
+          _sessions = sessionList.map((e) => ChatSession.fromMap(e)).toList();
+          _myStuffImages = imgList.cast<String>().toList();
           _sortSessions();
         });
       }
@@ -226,29 +237,36 @@ class _ChatScreenState extends State<ChatScreen> {
       if (_sessions.isEmpty) {
         _createNewSession(isFirstLoad: true);
       } else {
-        setState(() => _currentSessionId = _sessions.first.id);
+        setState(() {
+          _currentSessionId = _sessions.first.id;
+        });
         WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
       }
     } catch (e) {
+      debugPrint("Error loading history: $e");
       _createNewSession(isFirstLoad: true);
     }
-  }
-
-  void _sortSessions() {
-    _sessions.sort((a, b) {
-      if (a.isPinned != b.isPinned) return a.isPinned ? -1 : 1;
-      return b.createdAt.compareTo(a.createdAt);
-    });
   }
 
   Future<void> _saveData() async {
     if (_storageFile == null) return;
     try {
-      final String data = jsonEncode(_sessions.map((e) => e.toMap()).toList());
-      await _storageFile!.writeAsString(data);
+      final Map<String, dynamic> data = {
+        'sessions': _sessions.map((e) => e.toMap()).toList(),
+        'myStuff': _myStuffImages,
+      };
+      await _storageFile!.writeAsString(jsonEncode(data));
     } catch (e) {
-      debugPrint("Save error: $e");
+      debugPrint("Error saving data: $e");
     }
+  }
+
+  void _sortSessions() {
+    _sessions.sort((a, b) {
+      if (a.isPinned && !b.isPinned) return -1;
+      if (!a.isPinned && b.isPinned) return 1;
+      return b.createdAt.compareTo(a.createdAt);
+    });
   }
 
   void _createNewSession({bool isFirstLoad = false}) {
@@ -266,12 +284,14 @@ class _ChatScreenState extends State<ChatScreen> {
       _currentSessionId = newId;
       _isGenerating = false;
       _promptController.clear();
-      _clearAttachment();
+      _clearAttachment(); 
     });
 
     if (!isFirstLoad) {
       _saveData();
-      if (_scaffoldKey.currentState?.isDrawerOpen ?? false) Navigator.pop(context); 
+      if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
+        Navigator.pop(context); 
+      }
     }
   }
 
@@ -283,6 +303,56 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     Navigator.pop(context);
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  // --- HISTORY MANAGEMENT ---
+
+  void _pinSession(String id) {
+    setState(() {
+      final s = _sessions.firstWhere((s) => s.id == id);
+      s.isPinned = !s.isPinned;
+      _sortSessions();
+    });
+    _saveData();
+    Navigator.pop(context); // Close bottom sheet
+  }
+
+  void _deleteSession(String id) {
+    showDialog(context: context, builder: (ctx) => AlertDialog(
+      title: const Text("Delete Chat?"),
+      content: const Text("This action cannot be undone."),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
+        TextButton(onPressed: () {
+          setState(() {
+            _sessions.removeWhere((s) => s.id == id);
+            if (_sessions.isEmpty) _createNewSession();
+            else if (_currentSessionId == id) _currentSessionId = _sessions.first.id;
+          });
+          _saveData();
+          Navigator.pop(ctx); // Close dialog
+          Navigator.pop(context); // Close bottom sheet
+        }, child: const Text("Delete", style: TextStyle(color: Colors.red))),
+      ],
+    ));
+  }
+
+  void _renameSession(String id) {
+    final s = _sessions.firstWhere((s) => s.id == id);
+    final controller = TextEditingController(text: s.title);
+    showDialog(context: context, builder: (ctx) => AlertDialog(
+      title: const Text("Rename Chat"),
+      content: TextField(controller: controller, decoration: const InputDecoration(hintText: "Enter new name")),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
+        TextButton(onPressed: () {
+          setState(() => s.title = controller.text.trim());
+          _saveData();
+          Navigator.pop(ctx);
+          Navigator.pop(context);
+        }, child: const Text("Save")),
+      ],
+    ));
   }
 
   ChatSession get _currentSession {
@@ -299,29 +369,29 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // --- MODELS & INPUT ---
+  // --- MODELS & ATTACHMENT ---
 
   void _openModelSelector() {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (context) {
         return Container(
-          height: MediaQuery.of(context).size.height * 0.55,
+          height: MediaQuery.of(context).size.height * 0.5,
           padding: const EdgeInsets.all(20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // No title in model selector as per rules
-              _buildModelTile(AIModel.skyGen, "SkyGen", "Default AI Chat Model", Icons.chat_bubble_outline),
+              _buildModelTile("SkyGen", "Advanced Text AI Chat", Icons.chat_bubble_outline),
               const SizedBox(height: 10),
-              _buildModelTile(AIModel.skyImg, "Sky-Img", "Image Generation Model", Icons.image_outlined),
+              _buildModelTile("Sky-Img", "AI Image Generation", Icons.image_outlined),
               const SizedBox(height: 10),
-              _buildModelTile(AIModel.imgDescriber, "Img Describer", "Image Understanding", Icons.remove_red_eye_outlined),
+              _buildModelTile("Img Describer", "Image Understanding", Icons.remove_red_eye_outlined),
               const SizedBox(height: 10),
-              _buildModelTile(AIModel.skyCoder, "Sky Coder", "Programming Model", Icons.code),
+              _buildModelTile("Sky Coder", "Programming Model", Icons.code_rounded),
             ],
           ),
         );
@@ -329,11 +399,11 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildModelTile(AIModel model, String title, String subtitle, IconData icon) {
-    final isSelected = _selectedModel == model;
+  Widget _buildModelTile(String id, String subtitle, IconData icon) {
+    final isSelected = _selectedModel == id;
     return InkWell(
       onTap: () {
-        setState(() => _selectedModel = model);
+        setState(() => _selectedModel = id);
         Navigator.pop(context);
       },
       child: Container(
@@ -350,7 +420,7 @@ class _ChatScreenState extends State<ChatScreen> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                Text(id, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                 Text(subtitle, style: const TextStyle(color: Colors.grey, fontSize: 12)),
               ],
             ),
@@ -362,34 +432,53 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  // --- IMAGE PICKER & UPLOAD ---
+  // --- CUSTOM IMAGE PICKER ---
 
-  Future<void> _pickImage() async {
-    // Custom gallery check
+  Future<void> _openCustomGallery() async {
     if (Platform.isAndroid) {
-      await [Permission.storage, Permission.photos].request();
+       await Permission.storage.request();
+       await Permission.photos.request();
+    }
+    
+    // Check permission
+    final PermissionStatus ps = await Permission.photos.status;
+    final PermissionStatus ss = await Permission.storage.status;
+    
+    if (ps.isDenied && ss.isDenied && await Permission.photos.request().isDenied) {
+       _showToast("Permission denied", isError: true);
+       return;
     }
 
-    try {
-      final ImagePicker picker = ImagePicker();
-      final XFile? image = await picker.pickImage(source: ImageSource.gallery);
-      
-      if (image != null) {
+    if (!mounted) return;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => const CustomGalleryPicker(),
+    ).then((file) {
+      if (file != null && file is File) {
         setState(() {
-          _pickedImage = File(image.path);
+          _pickedImage = file;
           _isUploadingImage = true;
         });
-        await _uploadToImgBB(File(image.path));
+        _uploadToImgBB(file);
       }
-    } catch (e) {
-      debugPrint("Picker error: $e");
-    }
+    });
   }
 
   Future<void> _uploadToImgBB(File imageFile) async {
     try {
-      const apiKey = "6d207e02198a847aa98d0a2a901485a5"; 
+      if (!(await _checkInternet())) {
+        _showToast("No Internet Connection", isError: true);
+        _clearAttachment();
+        return;
+      }
+      
+      const apiKey = "0ffd290312c6b0ca9bb005414f44df2f"; 
       final uri = Uri.parse("https://api.imgbb.com/1/upload?key=$apiKey");
+      
       var request = http.MultipartRequest('POST', uri);
       request.files.add(await http.MultipartFile.fromPath('image', imageFile.path));
       
@@ -402,15 +491,16 @@ class _ChatScreenState extends State<ChatScreen> {
           _uploadedImgBBUrl = data['data']['url'];
           _isUploadingImage = false;
         });
+        _showToast("Image attached", isError: false);
       } else {
-        throw Exception("Upload failed");
+        throw Exception("ImgBB Upload Failed");
       }
     } catch (e) {
       setState(() {
-        _pickedImage = null;
+        _pickedImage = null; 
         _isUploadingImage = false;
       });
-      _showToast("Image upload failed.", isError: true);
+      _showToast("Upload failed: $e", isError: true);
     }
   }
 
@@ -422,32 +512,48 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  // --- CORE CHAT LOGIC ---
+  Future<bool> _checkInternet() async {
+    try {
+      final result = await InternetAddress.lookup('google.com');
+      return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // --- CORE LOGIC: SEND MESSAGE ---
 
   Future<void> _handleSubmitted() async {
     final prompt = _promptController.text.trim();
     
-    // OFFLINE CHECK
-    try {
-      final result = await InternetAddress.lookup('google.com');
-      if (result.isEmpty || result[0].rawAddress.isEmpty) throw Exception("Offline");
-    } catch (_) {
-      setState(() {
-        _currentSession.messages.add(ChatMessage(
-          id: DateTime.now().toString(),
-          text: "Internet connection unavailable. Please turn on internet and try again.",
-          type: MessageType.offline,
-          timestamp: DateTime.now().millisecondsSinceEpoch,
-        ));
-      });
-      _scrollToBottom();
+    if (prompt.isEmpty) {
+      if (_pickedImage != null) {
+         _showToast("Text description is mandatory with image.", isError: true);
+      }
       return;
     }
 
-    // Validation
-    if (prompt.isEmpty) return; // Image alone not allowed rule
-    if (_pickedImage != null && _uploadedImgBBUrl == null) {
-      _showToast("Wait for image upload...", isError: true);
+    if (!(await _checkInternet())) {
+      // Offline handling
+      setState(() {
+         _currentSession.messages.add(ChatMessage(
+           id: DateTime.now().millisecondsSinceEpoch.toString(),
+           text: prompt,
+           type: MessageType.user,
+           attachedImageUrl: _uploadedImgBBUrl,
+           timestamp: DateTime.now().millisecondsSinceEpoch,
+         ));
+         _currentSession.messages.add(ChatMessage(
+           id: "offline_${DateTime.now().millisecondsSinceEpoch}",
+           text: "Internet connection unavailable. Please turn on internet and try again.",
+           type: MessageType.ai,
+           status: GenStatus.error,
+           timestamp: DateTime.now().millisecondsSinceEpoch,
+         ));
+         _promptController.clear();
+         _clearAttachment();
+      });
+      _scrollToBottom();
       return;
     }
 
@@ -455,11 +561,10 @@ class _ChatScreenState extends State<ChatScreen> {
     final sessionIndex = _sessions.indexWhere((s) => s.id == _currentSessionId);
     if (sessionIndex != -1 && _sessions[sessionIndex].messages.isEmpty) {
       setState(() {
-        _sessions[sessionIndex].title = prompt.length > 20 ? "${prompt.substring(0, 20)}..." : prompt;
+        _sessions[sessionIndex].title = prompt.length > 25 ? "${prompt.substring(0, 25)}..." : prompt;
       });
     }
 
-    // User Message
     final userMsg = ChatMessage(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       text: prompt,
@@ -477,60 +582,214 @@ class _ChatScreenState extends State<ChatScreen> {
     
     _scrollToBottom();
     _saveData();
-    
+
+    // Logic Switch
     String? attachment = _uploadedImgBBUrl;
     _clearAttachment(); // Clear UI immediately
 
-    // Route to Logic
-    if (_selectedModel == AIModel.skyImg) {
+    if (_selectedModel == "Sky-Img") {
       await _processImageGeneration(prompt, attachment);
-    } else if (_selectedModel == AIModel.imgDescriber && attachment != null) {
-      await _processImageDescriber(prompt, attachment);
-    } else if (_selectedModel == AIModel.skyCoder) {
+    } else if (_selectedModel == "Img Describer" && attachment != null) {
+      await _processDescriberFlow(prompt, attachment);
+    } else if (_selectedModel == "Sky Coder") {
       await _processSkyCoder(prompt);
     } else {
-      // Default SkyGen (Text)
-      await _processSkyGen(prompt, attachment);
+      // SkyGen Default
+      if (attachment != null) {
+        // Fallback to describer flow if image attached in SkyGen
+        await _processDescriberFlow(prompt, attachment); 
+      } else {
+        await _processTextAI(prompt, "https://ai-hyper.vercel.app/api");
+      }
     }
   }
 
-  // 1. SKYGEN (Text)
-  Future<void> _processSkyGen(String prompt, String? attachment) async {
-    final aiMsgId = _addPlaceholder();
+  // --- TYPING ANIMATION HELPER ---
+
+  Future<void> _streamResponse(String msgId, String fullText) async {
+    if (!mounted) return;
+    
+    // Set status to streaming
+    _updateMessageStatus(msgId, GenStatus.streaming, errorText: fullText); // Store full text
+
+    int currentIndex = 0;
+    const chunkSize = 5; // Chars per tick
+    
+    // Initial partial
+    while (currentIndex < fullText.length) {
+      if (_stopRequested) {
+        _updateMessageStatus(msgId, GenStatus.stopped);
+        return;
+      }
+      
+      await Future.delayed(const Duration(milliseconds: 20)); // Typing speed
+      
+      currentIndex = min(currentIndex + chunkSize, fullText.length);
+      final currentVisible = fullText.substring(0, currentIndex);
+      
+      // Update specific message
+      final sIndex = _sessions.indexWhere((s) => s.id == _currentSessionId);
+      if (sIndex == -1) break;
+      final mIndex = _sessions[sIndex].messages.indexWhere((m) => m.id == msgId);
+      
+      if (mIndex != -1) {
+        setState(() {
+          _sessions[sIndex].messages[mIndex].visibleText = currentVisible;
+        });
+      }
+    }
+
+    _updateMessageStatus(msgId, GenStatus.completed, errorText: fullText);
+    _saveData();
+  }
+
+  // --- API HANDLERS ---
+
+  Future<void> _processTextAI(String prompt, String apiUrl, {Map<String, dynamic>? extraBody}) async {
+    final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
+    final aiMsg = ChatMessage(
+      id: aiMsgId,
+      text: "",
+      visibleText: "",
+      type: MessageType.ai,
+      status: GenStatus.waiting, // Show loading circle initially
+      timestamp: DateTime.now().millisecondsSinceEpoch,
+    );
+
+    setState(() => _currentSession.messages.add(aiMsg));
+    _scrollToBottom();
+
     try {
-      final url = Uri.parse("https://ai-hyper.vercel.app/api");
+      final body = {"q": prompt};
+      if (extraBody != null) body.addAll(extraBody);
+
       final response = await http.post(
-        url,
+        Uri.parse(apiUrl),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"q": prompt}), // Standard SkyGen ignores image currently
+        body: jsonEncode(body),
       );
 
       if (_stopRequested) throw Exception("Stopped");
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final answer = data["results"]["answer"] ?? "No response.";
-        _updateMessageStatus(aiMsgId, GenStatus.completed, resultText: answer);
+        await _streamResponse(aiMsgId, answer);
       } else {
-        throw Exception("API Error");
+        throw Exception("API Error ${response.statusCode}");
       }
     } catch (e) {
-      _updateMessageStatus(aiMsgId, GenStatus.error, resultText: "Error: $e");
+      _updateMessageStatus(aiMsgId, GenStatus.error, errorText: "Error: $e");
     } finally {
       setState(() => _isGenerating = false);
       _saveData();
     }
   }
 
-  // 2. SKY-IMG (Image Gen)
-  Future<void> _processImageGeneration(String prompt, String? attachment) async {
-    final aiMsgId = _addPlaceholder(isImageGen: true);
+  Future<void> _processSkyCoder(String prompt) async {
+    // 5 Minute timeout handling
+    final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
+    final aiMsg = ChatMessage(
+      id: aiMsgId,
+      text: "",
+      type: MessageType.ai,
+      status: GenStatus.waiting,
+      timestamp: DateTime.now().millisecondsSinceEpoch,
+    );
+
+    setState(() => _currentSession.messages.add(aiMsg));
+    _scrollToBottom();
+
+    try {
+      final response = await http.post(
+        Uri.parse("https://coder-bd.vercel.app/api"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({"q": prompt}),
+      ).timeout(const Duration(minutes: 5));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final answer = data["results"]["answer"] ?? "No code generated.";
+        await _streamResponse(aiMsgId, answer);
+      } else {
+        throw Exception("Coder API Failed");
+      }
+    } catch (e) {
+      _updateMessageStatus(aiMsgId, GenStatus.error, errorText: "Error: $e");
+    } finally {
+      setState(() => _isGenerating = false);
+      _saveData();
+    }
+  }
+
+  Future<void> _processDescriberFlow(String prompt, String imgUrl) async {
+    final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
+    setState(() => _currentSession.messages.add(ChatMessage(
+      id: aiMsgId,
+      text: "Analyzing image...",
+      type: MessageType.ai,
+      status: GenStatus.waiting,
+      timestamp: DateTime.now().millisecondsSinceEpoch,
+    )));
+    _scrollToBottom();
+
+    try {
+      // 1. Get Description
+      final descRes = await http.get(Uri.parse("https://gen-z-describer.vercel.app/api?url=$imgUrl"));
+      if (descRes.statusCode != 200) throw Exception("Describer failed");
+      
+      final descData = jsonDecode(descRes.body);
+      final description = descData["results"]["description"];
+
+      // 2. Send to SkyGen
+      final skyGenBody = {
+        "q": prompt,
+        "image": {
+          "url": imgUrl,
+          "description": description
+        }
+      };
+
+      final response = await http.post(
+        Uri.parse("https://ai-hyper.vercel.app/api"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode(skyGenBody),
+      );
+
+       if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final answer = data["results"]["answer"];
+        await _streamResponse(aiMsgId, answer);
+      } else {
+        throw Exception("SkyGen Refused Context");
+      }
+
+    } catch (e) {
+       _updateMessageStatus(aiMsgId, GenStatus.error, errorText: "Error: $e");
+    } finally {
+       setState(() => _isGenerating = false);
+       _saveData();
+    }
+  }
+
+  Future<void> _processImageGeneration(String prompt, String? attachmentUrl) async {
+    final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
+    setState(() => _currentSession.messages.add(ChatMessage(
+      id: aiMsgId,
+      text: "Generating image...",
+      type: MessageType.ai,
+      status: GenStatus.generating,
+      timestamp: DateTime.now().millisecondsSinceEpoch,
+    )));
+    _scrollToBottom();
+
     try {
       Uri genUrl;
       Map<String, dynamic> body;
 
-      if (attachment != null) {
+      if (attachmentUrl != null) {
         genUrl = Uri.parse("https://gen-z-image.vercel.app/image/gen");
-        body = {"q": prompt, "url": attachment};
+        body = {"q": prompt, "url": attachmentUrl};
       } else {
         genUrl = Uri.parse("https://gen-z-image.vercel.app/gen");
         body = {"q": prompt};
@@ -542,7 +801,6 @@ class _ChatScreenState extends State<ChatScreen> {
         body: jsonEncode(body),
       ).timeout(const Duration(seconds: 20));
 
-      if (_stopRequested) throw Exception("Stopped");
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         _currentGenId = data["results"]["id"];
@@ -551,86 +809,23 @@ class _ChatScreenState extends State<ChatScreen> {
         throw Exception("Server Error");
       }
     } catch (e) {
-      _updateMessageStatus(aiMsgId, GenStatus.error, resultText: "Failed: $e");
+      _updateMessageStatus(aiMsgId, GenStatus.error, errorText: "Failed: $e");
     } finally {
-      if (mounted) setState(() { _isGenerating = false; _currentGenId = null; });
-      _saveData();
+      if (mounted) {
+        setState(() {
+          _isGenerating = false;
+          _currentGenId = null;
+        });
+        _saveData();
+      }
     }
   }
 
-  // 3. IMG DESCRIBER
-  Future<void> _processImageDescriber(String prompt, String attachment) async {
-    final aiMsgId = _addPlaceholder();
-    try {
-      // Step 1: Describe
-      final descUrl = Uri.parse("https://gen-z-describer.vercel.app/api?url=$attachment");
-      final descRes = await http.get(descUrl);
-      String description = "";
-      if (descRes.statusCode == 200) {
-        final data = jsonDecode(descRes.body);
-        description = data["results"]["description"] ?? "";
-      }
-
-      // Step 2: Combine and Send to SkyGen
-      // "SkyGen" text API is rigid, we append description to prompt for context.
-      final fullPrompt = "User said: $prompt. Image context: $description";
-      
-      final url = Uri.parse("https://ai-hyper.vercel.app/api");
-      final response = await http.post(
-        url,
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"q": fullPrompt}),
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final answer = data["results"]["answer"] ?? "No response.";
-        _updateMessageStatus(aiMsgId, GenStatus.completed, resultText: answer);
-      } else {
-        throw Exception("API Error");
-      }
-    } catch (e) {
-      _updateMessageStatus(aiMsgId, GenStatus.error, resultText: "Analysis failed: $e");
-    } finally {
-      setState(() => _isGenerating = false);
-      _saveData();
-    }
-  }
-
-  // 4. SKY CODER
-  Future<void> _processSkyCoder(String prompt) async {
-    final aiMsgId = _addPlaceholder();
-    try {
-      final url = Uri.parse("https://coder-bd.vercel.app/api");
-      final response = await http.post(
-         url,
-         headers: {"Content-Type": "application/json"},
-         body: jsonEncode({"q": prompt}),
-      ).timeout(const Duration(minutes: 5)); // Long timeout
-
-      if (_stopRequested) throw Exception("Stopped");
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        // Try various response keys in case API changed
-        final answer = data["result"] ?? data["results"]?["answer"] ?? response.body; 
-        _updateMessageStatus(aiMsgId, GenStatus.completed, resultText: answer);
-      } else {
-        throw Exception("Coder API Error");
-      }
-    } catch (e) {
-      _updateMessageStatus(aiMsgId, GenStatus.error, resultText: "Error: $e");
-    } finally {
-      setState(() => _isGenerating = false);
-      _saveData();
-    }
-  }
-
-  // Helper: Poll
   Future<void> _pollForImage(String msgId, String generationId) async {
     int attempts = 0;
     while (attempts < 30) {
       if (_stopRequested) {
-        _updateMessageStatus(msgId, GenStatus.stopped, resultText: "Stopped.");
+        _updateMessageStatus(msgId, GenStatus.stopped, errorText: "Stopped.");
         return;
       }
       await Future.delayed(const Duration(seconds: 2));
@@ -641,32 +836,23 @@ class _ChatScreenState extends State<ChatScreen> {
           final data = jsonDecode(response.body);
           final List<dynamic> urls = data["results"]["urls"] ?? [];
           if (urls.isNotEmpty) {
-            _updateMessageStatus(msgId, GenStatus.completed, imageUrl: urls.first);
+            String finalUrl = urls.first;
+            // Add to My Stuff
+            setState(() {
+              _myStuffImages.insert(0, finalUrl);
+            });
+            _updateMessageStatus(msgId, GenStatus.completed, imageUrl: finalUrl);
+            _showToast("Image Generated!", isError: false);
             return;
           }
         }
       } catch (_) {}
       attempts++;
     }
-    _updateMessageStatus(msgId, GenStatus.error, resultText: "Timeout.");
+    _updateMessageStatus(msgId, GenStatus.error, errorText: "Timeout.");
   }
 
-  String _addPlaceholder({bool isImageGen = false}) {
-    final id = "ai_${DateTime.now().millisecondsSinceEpoch}";
-    setState(() {
-      _currentSession.messages.add(ChatMessage(
-        id: id,
-        text: isImageGen ? "Generating image..." : "Thinking...",
-        type: MessageType.ai,
-        status: GenStatus.generating,
-        timestamp: DateTime.now().millisecondsSinceEpoch,
-      ));
-    });
-    _scrollToBottom();
-    return id;
-  }
-
-  void _updateMessageStatus(String msgId, GenStatus status, {String? imageUrl, String? resultText}) {
+  void _updateMessageStatus(String msgId, GenStatus status, {String? imageUrl, String? errorText}) {
     if (!mounted) return;
     final sIndex = _sessions.indexWhere((s) => s.id == _currentSessionId);
     if (sIndex == -1) return;
@@ -674,87 +860,114 @@ class _ChatScreenState extends State<ChatScreen> {
     final mIndex = _sessions[sIndex].messages.indexWhere((m) => m.id == msgId);
     if (mIndex != -1) {
       setState(() {
+        var old = _sessions[sIndex].messages[mIndex];
         _sessions[sIndex].messages[mIndex] = ChatMessage(
           id: msgId,
-          text: resultText ?? _sessions[sIndex].messages[mIndex].text,
+          text: errorText ?? old.text,
+          visibleText: status == GenStatus.completed ? (errorText ?? old.text) : old.visibleText,
           type: MessageType.ai,
           imageUrl: imageUrl,
           status: status,
           timestamp: DateTime.now().millisecondsSinceEpoch,
-          isAnimated: status == GenStatus.completed && imageUrl == null, // Enable typing animation
         );
       });
-      _saveData();
       if (status == GenStatus.completed) _scrollToBottom();
     }
   }
 
-  // --- DOWNLOAD ---
+  // --- DOWNLOAD & TOAST ---
+
+  void _showToast(String message, {bool isError = false}) {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: '',
+      barrierColor: Colors.transparent,
+      transitionDuration: const Duration(milliseconds: 400),
+      pageBuilder: (context, anim1, anim2) {
+        return Align(
+          alignment: Alignment.bottomCenter,
+          child: SlideTransition(
+            position: Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero).animate(CurvedAnimation(parent: anim1, curve: Curves.easeOutBack)),
+            child: Container(
+              margin: EdgeInsets.only(bottom: 80 + MediaQuery.of(context).viewInsets.bottom, left: 20, right: 20),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: isError ? Colors.redAccent : const Color(0xFF333333),
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 8, offset: const Offset(0, 2))],
+              ),
+              child: Material(
+                color: Colors.transparent,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(isError ? Icons.error_outline : Icons.check_circle_outline, color: Colors.white),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(message, style: const TextStyle(color: Colors.white))),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    // Auto dismiss handled by user tap or timeout could be added, but dialog stays until tapped outside usually. 
+    // To make it auto-close:
+    Future.delayed(const Duration(seconds: 3), () {
+       if(mounted && Navigator.canPop(context)) {
+          // Navigator.of(context).pop(); // Warning: might pop wrong route. 
+          // For safety in this simpler impl, we let user dismiss or standard snackbar logic.
+          // But implementing true custom toast requires Overlay.
+          // I'll stick to Overlay entry implementation for robustness.
+       }
+    });
+  }
+  
+  // Robust Toast
+  void _showOverlayToast(String message, {bool isError = false}) {
+     OverlayEntry overlayEntry;
+     overlayEntry = OverlayEntry(builder: (context) => Positioned(
+       bottom: 90 + MediaQuery.of(context).viewInsets.bottom,
+       left: 20, right: 20,
+       child: Material(
+         color: Colors.transparent,
+         child: SlideToast(message: message, isError: isError),
+       ),
+     ));
+     Overlay.of(context).insert(overlayEntry);
+     Future.delayed(const Duration(seconds: 3), () => overlayEntry.remove());
+  }
 
   Future<void> _downloadImage(String url) async {
-    if (Platform.isAndroid) {
-       await Permission.storage.request();
-    }
+    if (Platform.isAndroid) await Permission.storage.request();
 
     try {
-      final dir = Directory('/storage/emulated/0/SkyGen');
-      if (!await dir.exists()) await dir.create(recursive: true);
+      Directory? directory;
+      if (Platform.isAndroid) {
+        directory = Directory('/storage/emulated/0/SkyGen');
+      } else {
+        directory = await getApplicationDocumentsDirectory();
+      }
+
+      if (!await directory.exists()) {
+        await directory.create(recursive: true);
+      }
 
       final fileName = "SkyGen_${DateTime.now().millisecondsSinceEpoch}.png";
-      final file = File("${dir.path}/$fileName");
+      final file = File("${directory.path}/$fileName");
+
       final response = await http.get(Uri.parse(url));
       await file.writeAsBytes(response.bodyBytes);
 
-      _showToast("Saved to SkyGen folder");
+      _showOverlayToast("Saved to ${file.path}");
     } catch (e) {
-      // Fallback
-      try {
-        final dir = await getApplicationDocumentsDirectory();
-        final file = File("${dir.path}/SkyGen_${DateTime.now().millisecondsSinceEpoch}.png");
-        final response = await http.get(Uri.parse(url));
-        await file.writeAsBytes(response.bodyBytes);
-        _showToast("Saved to Documents");
-      } catch (x) {
-        _showToast("Save failed", isError: true);
-      }
+      _showOverlayToast("Save failed", isError: true);
     }
   }
 
-  // --- CUSTOM TOAST ---
-
-  void _showToast(String message, {bool isError = false}) {
-    final overlay = Overlay.of(context);
-    final overlayEntry = OverlayEntry(
-      builder: (context) => Positioned(
-        top: 60,
-        left: 20,
-        right: 20,
-        child: Material(
-          color: Colors.transparent,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: isError ? Colors.redAccent : const Color(0xFF333333),
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4))],
-            ),
-            child: Row(
-              children: [
-                Icon(isError ? Icons.error_outline : Icons.check_circle, color: Colors.white),
-                const SizedBox(width: 10),
-                Expanded(child: Text(message, style: const TextStyle(color: Colors.white))),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-
-    overlay.insert(overlayEntry);
-    Future.delayed(const Duration(seconds: 3), () => overlayEntry.remove());
-  }
-
-  // --- UI BUILD ---
+  // --- UI CONSTRUCTION ---
 
   @override
   Widget build(BuildContext context) {
@@ -763,7 +976,9 @@ class _ChatScreenState extends State<ChatScreen> {
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: Colors.white,
+      
       drawer: _buildDrawer(),
+
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.menu_rounded, size: 28),
@@ -771,17 +986,28 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         title: GestureDetector(
           onTap: _openModelSelector,
-          child: Text("SkyGen", style: TextStyle(color: Colors.black87)),
+          child: Row(
+            children: [
+              Text(_selectedModel), // No extra text
+              const SizedBox(width: 4),
+              const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.black54, size: 20),
+            ],
+          ),
         ),
-        centerTitle: true,
+        centerTitle: false,
         actions: [
           IconButton(
-             icon: const Icon(Icons.more_vert, color: Colors.black87),
-             onPressed: () => _showMenuDialog(),
+            icon: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(color: Colors.grey[100], shape: BoxShape.circle),
+              child: const Icon(Icons.add, color: Colors.black87),
+            ),
+            onPressed: () => _createNewSession(),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 16),
         ],
       ),
+
       body: Column(
         children: [
           Expanded(
@@ -795,7 +1021,6 @@ class _ChatScreenState extends State<ChatScreen> {
                       return ChatBubble(
                         message: currentMessages[index],
                         onDownload: _downloadImage,
-                        onToast: _showToast,
                       );
                     },
                   ),
@@ -806,241 +1031,173 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  // --- REDESIGNED DRAWER ---
+  // --- NEW DRAWER DESIGN ---
 
   Widget _buildDrawer() {
-    // Collect all images
-    List<String> myStuffImages = [];
-    for (var s in _sessions) {
-      for (var m in s.messages) {
-        if (m.imageUrl != null) myStuffImages.add(m.imageUrl!);
-      }
-    }
-
     return Drawer(
       backgroundColor: Colors.white,
-      child: Column(
-        children: [
-          // Expanding Search
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 300),
-            padding: const EdgeInsets.fromLTRB(16, 50, 16, 16),
-            height: _isSearching ? MediaQuery.of(context).size.height : 120,
-            color: Colors.white,
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    if (_isSearching)
-                      IconButton(icon: Icon(Icons.arrow_back), onPressed: () => setState(() => _isSearching = false)),
-                    Expanded(
-                      child: Container(
-                        height: 45,
-                        decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(24)),
-                        child: TextField(
-                          controller: _searchController,
-                          onTap: () => setState(() => _isSearching = true),
-                          onChanged: (val) => setState(() {}),
-                          decoration: const InputDecoration(
-                            prefixIcon: Icon(Icons.search, color: Colors.grey),
-                            hintText: "Search chats...",
-                            border: InputBorder.none,
-                            contentPadding: EdgeInsets.only(top: 10),
-                          ),
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.add, color: Colors.black87),
-                      onPressed: () {
-                         setState(() => _isSearching = false);
-                         Navigator.pop(context);
-                         _createNewSession();
-                      },
-                    )
-                  ],
-                ),
-                if (_isSearching) ...[
-                   const SizedBox(height: 20),
-                   Expanded(
-                     child: ListView(
-                       children: _sessions.where((s) => s.title.toLowerCase().contains(_searchController.text.toLowerCase())).map((s) => 
-                         ListTile(
-                           title: Text(s.title),
-                           onTap: () {
-                             setState(() => _isSearching = false);
-                             _switchSession(s.id);
-                           },
-                         )
-                       ).toList(),
-                     ),
-                   )
-                ]
-              ],
-            ),
-          ),
-          
-          if (!_isSearching && myStuffImages.isNotEmpty) ...[
-             _buildMyStuffSection(myStuffImages),
-             const Divider(height: 1),
-          ],
-          
-          if (!_isSearching)
-          Expanded(
-            child: ListView.builder(
-              padding: EdgeInsets.zero,
-              itemCount: _sessions.length,
-              itemBuilder: (context, index) {
-                final session = _sessions[index];
-                final isActive = session.id == _currentSessionId;
-                return ListTile(
-                  tileColor: isActive ? Colors.grey[100] : Colors.transparent,
-                  leading: Icon(
-                    session.isPinned ? Icons.push_pin : Icons.chat_bubble_outline_rounded,
-                    color: session.isPinned ? const Color(0xFF007AFF) : Colors.black54,
-                    size: 20
-                  ),
-                  title: Text(session.title, maxLines: 1, overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontWeight: isActive ? FontWeight.w600 : FontWeight.normal)),
-                  onTap: () => _switchSession(session.id),
-                  onLongPress: () => _showSessionOptions(session),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMyStuffSection(List<String> images) {
-    final displayImages = images.take(3).toList();
-    return Column(
-      children: [
-        ListTile(
-          title: const Text("My Stuff", style: TextStyle(fontWeight: FontWeight.bold)),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => MyStuffPage(images: images, onDownload: _downloadImage))),
-        ),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: displayImages.map((url) => Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.network(url, width: 70, height: 70, fit: BoxFit.cover),
-            ),
-          )).toList(),
-        )
-      ],
-    );
-  }
-
-  void _showSessionOptions(ChatSession session) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.white,
-      builder: (context) => Wrap(
-        children: [
-          ListTile(
-            leading: const Icon(Icons.edit), title: const Text("Rename"),
-            onTap: () {
-              Navigator.pop(context);
-              _renameSession(session);
-            }
-          ),
-          ListTile(
-            leading: const Icon(Icons.push_pin), title: Text(session.isPinned ? "Unpin" : "Pin"),
-            onTap: () {
-              setState(() {
-                session.isPinned = !session.isPinned;
-                _sortSessions();
-              });
-              _saveData();
-              Navigator.pop(context);
-            }
-          ),
-          ListTile(
-            leading: const Icon(Icons.delete, color: Colors.red), title: const Text("Delete", style: TextStyle(color: Colors.red)),
-            onTap: () {
-              setState(() {
-                _sessions.removeWhere((s) => s.id == session.id);
-                if (_sessions.isEmpty) _createNewSession();
-                else if (_currentSessionId == session.id) _currentSessionId = _sessions.first.id;
-              });
-              _saveData();
-              Navigator.pop(context);
-            }
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _renameSession(ChatSession session) {
-    final c = TextEditingController(text: session.title);
-    showDialog(context: context, builder: (context) => AlertDialog(
-      title: const Text("Rename Chat"),
-      content: TextField(controller: c, autofocus: true),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-        TextButton(onPressed: () {
-          setState(() => session.title = c.text);
-          _saveData();
-          Navigator.pop(context);
-        }, child: const Text("Save")),
-      ],
-    ));
-  }
-
-  // --- THREE DOT MENU (Bottom Sheet Style) ---
-
-  void _showMenuDialog() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.white,
-      isScrollControlled: true,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(20),
-        height: 180,
+      width: _isSearchExpanded ? MediaQuery.of(context).size.width : 304,
+      child: SafeArea(
         child: Column(
           children: [
-             Row(
-               children: [
-                 const Icon(Icons.search, color: Colors.grey),
-                 const SizedBox(width: 10),
-                 Expanded(
-                   child: Container(
-                     padding: const EdgeInsets.symmetric(horizontal: 10),
-                     decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(20)),
-                     child: TextField(
-                       onTap: () {
-                         Navigator.pop(context);
-                         _scaffoldKey.currentState?.openDrawer();
-                         setState(() => _isSearching = true);
-                       },
-                       decoration: const InputDecoration(border: InputBorder.none, hintText: "Search chats..."),
-                       readOnly: true,
-                     ),
-                   ),
-                 ),
-                 const SizedBox(width: 10),
-                 IconButton(
-                   icon: const Icon(Icons.add_circle_outline, color: Colors.black87),
-                   onPressed: () {
-                     Navigator.pop(context);
-                     _createNewSession();
-                   },
-                 )
-               ],
-             )
+            // Search Bar Area
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      height: 50,
+                      decoration: BoxDecoration(
+                        color: Colors.grey[100],
+                        borderRadius: BorderRadius.circular(25),
+                      ),
+                      child: Row(
+                        children: [
+                          IconButton(
+                            icon: Icon(_isSearchExpanded ? Icons.arrow_back : Icons.search),
+                            color: Colors.grey,
+                            onPressed: () {
+                              if (_isSearchExpanded) {
+                                setState(() {
+                                  _isSearchExpanded = false;
+                                  _searchQuery = "";
+                                  _searchController.clear();
+                                });
+                              }
+                            },
+                          ),
+                          Expanded(
+                            child: TextField(
+                              controller: _searchController,
+                              onTap: () => setState(() => _isSearchExpanded = true),
+                              onChanged: (val) => setState(() => _searchQuery = val.toLowerCase()),
+                              decoration: const InputDecoration(
+                                hintText: "Search chats...",
+                                border: InputBorder.none,
+                                contentPadding: EdgeInsets.only(bottom: 4),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (!_isSearchExpanded) ...[
+                    const SizedBox(width: 10),
+                    IconButton(
+                      onPressed: () => _createNewSession(),
+                      icon: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: const BoxDecoration(color: Colors.black, shape: BoxShape.circle),
+                        child: const Icon(Icons.add, color: Colors.white, size: 20),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            
+            // My Stuff Section
+            if (!_isSearchExpanded && _myStuffImages.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                child: GestureDetector(
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => MyStuffPage(images: _myStuffImages)));
+                  },
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("My Stuff", style: TextStyle(fontWeight: FontWeight.bold)),
+                      const Icon(Icons.chevron_right, color: Colors.grey),
+                    ],
+                  ),
+                ),
+              ),
+              SizedBox(
+                height: 80,
+                child: ListView.separated(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  scrollDirection: Axis.horizontal,
+                  itemCount: min(_myStuffImages.length, 3),
+                  separatorBuilder: (_,__) => const SizedBox(width: 10),
+                  itemBuilder: (ctx, i) {
+                    return ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: CachedNetworkImage(
+                        imageUrl: _myStuffImages[i],
+                        width: 80, height: 80, fit: BoxFit.cover,
+                        placeholder: (context, url) => Container(color: Colors.grey[200]),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              const Divider(height: 30),
+            ],
+
+            // Chat List
+            Expanded(
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                itemCount: _sessions.length,
+                itemBuilder: (context, index) {
+                  final session = _sessions[index];
+                  if (_searchQuery.isNotEmpty && !session.title.toLowerCase().contains(_searchQuery)) {
+                    return const SizedBox.shrink();
+                  }
+
+                  final isActive = session.id == _currentSessionId;
+                  return ListTile(
+                    tileColor: isActive ? Colors.grey[100] : Colors.transparent,
+                    leading: Icon(
+                      session.isPinned ? Icons.push_pin : Icons.chat_bubble_outline_rounded,
+                      color: session.isPinned ? const Color(0xFF007AFF) : Colors.black54,
+                      size: 20,
+                    ),
+                    title: Text(session.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontWeight: isActive ? FontWeight.w600 : FontWeight.normal)),
+                    onTap: () => _switchSession(session.id),
+                    onLongPress: () {
+                      showModalBottomSheet(
+                        context: context,
+                        builder: (ctx) => Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            ListTile(
+                              leading: const Icon(Icons.edit),
+                              title: const Text("Rename"),
+                              onTap: () => _renameSession(session.id),
+                            ),
+                            ListTile(
+                              leading: const Icon(Icons.push_pin),
+                              title: Text(session.isPinned ? "Unpin" : "Pin"),
+                              onTap: () => _pinSession(session.id),
+                            ),
+                            ListTile(
+                              leading: const Icon(Icons.delete, color: Colors.red),
+                              title: const Text("Delete", style: TextStyle(color: Colors.red)),
+                              onTap: () => _deleteSession(session.id),
+                            ),
+                            const SizedBox(height: 20),
+                          ],
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  // --- INPUT AREA ---
+  // --- INPUT AREA WITH PREVIEW ---
 
   Widget _buildInputArea() {
     return Container(
@@ -1054,6 +1211,7 @@ class _ChatScreenState extends State<ChatScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Preview Attachment
           if (_pickedImage != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 10),
@@ -1085,17 +1243,25 @@ class _ChatScreenState extends State<ChatScreen> {
             children: [
               Expanded(
                 child: Container(
-                  decoration: BoxDecoration(color: const Color(0xFFF2F4F7), borderRadius: BorderRadius.circular(24)),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF2F4F7),
+                    borderRadius: BorderRadius.circular(24),
+                  ),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      if (_showPlusIcon)
-                        IconButton(icon: const Icon(Icons.add, color: Colors.grey), onPressed: _pickImage),
+                      // CUSTOM PICKER
+                      IconButton(
+                        icon: const Icon(Icons.add, color: Colors.grey),
+                        onPressed: _openCustomGallery,
+                      ),
+                      
                       Expanded(
                         child: TextField(
                           controller: _promptController,
                           enabled: !_isGenerating,
-                          maxLines: 4, minLines: 1,
+                          maxLines: 4,
+                          minLines: 1,
                           style: const TextStyle(color: Colors.black87, fontSize: 16),
                           decoration: const InputDecoration(
                             hintText: "Message...",
@@ -1114,12 +1280,19 @@ class _ChatScreenState extends State<ChatScreen> {
               GestureDetector(
                 onTap: _isGenerating ? () => setState(() => _stopRequested = true) : _handleSubmitted,
                 child: Container(
-                  width: 50, height: 50,
+                  width: 50,
+                  height: 50,
                   decoration: BoxDecoration(
-                    color: (_promptController.text.isEmpty) && !_isGenerating ? Colors.grey : (_isGenerating ? Colors.redAccent : Colors.black),
+                    color: (_promptController.text.isEmpty && _pickedImage == null) && !_isGenerating 
+                        ? Colors.grey 
+                        : (_isGenerating ? Colors.redAccent : Colors.black),
                     shape: BoxShape.circle,
                   ),
-                  child: Icon(_isGenerating ? Icons.stop_rounded : Icons.arrow_upward_rounded, color: Colors.white, size: 26),
+                  child: Icon(
+                    _isGenerating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+                    color: Colors.white,
+                    size: 26,
+                  ),
                 ),
               ),
             ],
@@ -1131,133 +1304,127 @@ class _ChatScreenState extends State<ChatScreen> {
 }
 
 // ---------------------------------------------------------------------------
-// SUB-PAGES & WIDGETS
+// WIDGETS & HELPERS
 // ---------------------------------------------------------------------------
 
-class MyStuffPage extends StatelessWidget {
-  final List<String> images;
-  final Function(String) onDownload;
-
-  const MyStuffPage({super.key, required this.images, required this.onDownload});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("My Stuff")),
-      body: GridView.builder(
-        padding: const EdgeInsets.all(10),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3, mainAxisSpacing: 10, crossAxisSpacing: 10
-        ),
-        itemCount: images.length,
-        itemBuilder: (context, index) {
-          return GestureDetector(
-            onTap: () => onDownload(images[index]),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.network(images[index], fit: BoxFit.cover),
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class ChatBubble extends StatefulWidget {
-  final ChatMessage message;
-  final Function(String) onDownload;
-  final Function(String, {bool isError}) onToast;
-
-  const ChatBubble({super.key, required this.message, required this.onDownload, required this.onToast});
+class SlideToast extends StatefulWidget {
+  final String message;
+  final bool isError;
+  const SlideToast({super.key, required this.message, required this.isError});
 
   @override
-  State<ChatBubble> createState() => _ChatBubbleState();
+  State<SlideToast> createState() => _SlideToastState();
 }
 
-class _ChatBubbleState extends State<ChatBubble> {
-  String _visibleText = "";
-  Timer? _typingTimer;
+class _SlideToastState extends State<SlideToast> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<Offset> _offsetAnimation;
 
   @override
   void initState() {
     super.initState();
-    if (widget.message.isAnimated && widget.message.type == MessageType.ai && widget.message.imageUrl == null) {
-      _startTyping();
-    } else {
-      _visibleText = widget.message.text;
-    }
-  }
-
-  void _startTyping() {
-    int index = 0;
-    _typingTimer = Timer.periodic(const Duration(milliseconds: 15), (timer) {
-      if (index < widget.message.text.length) {
-        if (mounted) setState(() => _visibleText += widget.message.text[index]);
-        index++;
-      } else {
-        timer.cancel();
-      }
-    });
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 500),
+      vsync: this,
+    )..forward();
+    _offsetAnimation = Tween<Offset>(
+      begin: const Offset(1.5, 0.0),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutBack));
   }
 
   @override
   void dispose() {
-    _typingTimer?.cancel();
+    _controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final isUser = widget.message.type == MessageType.user;
-    final isOffline = widget.message.type == MessageType.offline;
+    return SlideTransition(
+      position: _offsetAnimation,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: widget.isError ? const Color(0xFFE53935) : const Color(0xFF323232),
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+             BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 10, offset: const Offset(0, 4))
+          ]
+        ),
+        child: Row(
+          children: [
+            Icon(widget.isError ? Icons.warning_amber_rounded : Icons.check_circle_outline, color: Colors.white),
+            const SizedBox(width: 12),
+            Expanded(child: Text(widget.message, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500))),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
+class ChatBubble extends StatelessWidget {
+  final ChatMessage message;
+  final Function(String) onDownload;
+
+  const ChatBubble({super.key, required this.message, required this.onDownload});
+
+  @override
+  Widget build(BuildContext context) {
+    final isUser = message.type == MessageType.user;
+    
     return Padding(
       padding: const EdgeInsets.only(bottom: 24),
-      child: isOffline 
-        ? Center(
-            child: Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(color: Colors.red[50], borderRadius: BorderRadius.circular(12)),
-              child: Text(widget.message.text, style: const TextStyle(color: Colors.red)),
+      child: Row(
+        mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!isUser) ...[
+             const CircleAvatar(
+              radius: 14,
+              backgroundColor: Colors.black,
+              child: Icon(Icons.auto_awesome, size: 14, color: Colors.white),
             ),
-          )
-        : Row(
-            mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (!isUser) ...[
-                const CircleAvatar(
-                  radius: 16,
-                  backgroundImage: AssetImage('android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png'),
-                  backgroundColor: Colors.transparent,
-                  child: null,
-                ),
-                const SizedBox(width: 8),
-              ],
-              Flexible(
-                child: isUser 
-                  ? _buildUserMessage() 
-                  : _buildAIMessage(context),
-              ),
-            ],
+            const SizedBox(width: 10),
+          ],
+          Flexible(
+            child: isUser 
+              ? _buildUserMessage() 
+              : _buildAIMessage(context),
           ),
+        ],
+      ),
     );
   }
 
   Widget _buildUserMessage() {
     return Container(
+      constraints: const BoxConstraints(maxWidth: 300),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(color: const Color(0xFFF2F2F2), borderRadius: BorderRadius.circular(20)),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF2F2F2),
+        borderRadius: BorderRadius.circular(20),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          if (widget.message.attachedImageUrl != null)
+          if (message.attachedImageUrl != null)
             Padding(
                padding: const EdgeInsets.only(bottom: 8),
-               child: ClipRRect(borderRadius: BorderRadius.circular(10), child: Image.network(widget.message.attachedImageUrl!, width: 150, fit: BoxFit.cover)),
+               child: ClipRRect(
+                 borderRadius: BorderRadius.circular(10),
+                 child: CachedNetworkImage(
+                   imageUrl: message.attachedImageUrl!, 
+                   width: 200, fit: BoxFit.cover,
+                   placeholder: (c,u) => const CircularProgressIndicator(),
+                 ),
+               ),
             ),
-          Text(widget.message.text, style: const TextStyle(fontSize: 16, color: Colors.black87, height: 1.4)),
+          Text(
+            message.text,
+            style: const TextStyle(fontSize: 16, color: Colors.black87, height: 1.4),
+          ),
         ],
       ),
     );
@@ -1267,28 +1434,37 @@ class _ChatBubbleState extends State<ChatBubble> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (widget.message.status == GenStatus.completed && widget.message.imageUrl != null)
-          _buildImagePreview(context, widget.message.imageUrl!)
-        else if (widget.message.status == GenStatus.completed)
+        if (message.imageUrl != null)
+          _buildImagePreview(context, message.imageUrl!),
+          
+        if (message.visibleText.isNotEmpty)
            Container(
              constraints: const BoxConstraints(maxWidth: 320),
-             child: Markdown(
-                data: _visibleText,
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                styleSheet: MarkdownStyleSheet(
-                  p: const TextStyle(fontSize: 16, color: Colors.black87),
-                  code: const TextStyle(fontFamily: 'monospace', backgroundColor: Color(0xFFEEEEEE)),
-                  codeblockDecoration: BoxDecoration(color: const Color(0xFF282c34), borderRadius: BorderRadius.circular(8)),
-                ),
-                builders: {
-                  'code': CodeBlockBuilder(widget.onToast),
-                },
+             margin: const EdgeInsets.only(top: 4), // Below avatar
+             child: MarkdownBody(
+               data: message.visibleText,
+               selectable: true,
+               builders: {
+                 'code': CodeBlockBuilder(),
+               },
+               styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+                 p: const TextStyle(fontSize: 16, color: Colors.black87, height: 1.5),
+                 code: const TextStyle(fontFamily: 'monospace', backgroundColor: Colors.transparent),
+                 codeblockDecoration: BoxDecoration(
+                    color: const Color(0xFF282C34),
+                    borderRadius: BorderRadius.circular(8),
+                 ),
+               ),
              ),
-           )
-        else if (widget.message.status == GenStatus.generating || widget.message.status == GenStatus.waiting)
-          _buildGeneratingState()
-        else if (widget.message.status == GenStatus.error || widget.message.status == GenStatus.stopped)
+           ),
+           
+        if (message.status == GenStatus.waiting || message.status == GenStatus.generating)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: TypingIndicator(),
+          ),
+          
+        if (message.status == GenStatus.error)
           _buildErrorState(),
       ],
     );
@@ -1297,24 +1473,37 @@ class _ChatBubbleState extends State<ChatBubble> {
   Widget _buildImagePreview(BuildContext context, String url) {
     return Container(
       constraints: const BoxConstraints(maxWidth: 300),
+      margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10, offset: const Offset(0, 4))],
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10, offset: const Offset(0, 4)),
+        ],
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
         child: Stack(
           children: [
-            Image.network(url, fit: BoxFit.cover,
-              loadingBuilder: (ctx, child, progress) => progress == null ? child : const SizedBox(height: 300, width: 300, child: Center(child: CircularProgressIndicator())),
+            CachedNetworkImage(
+              imageUrl: url,
+              fit: BoxFit.cover,
+              placeholder: (ctx, url) => const SizedBox(
+                height: 300, width: 300,
+                child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+              ),
+              errorWidget: (context, url, error) => const SizedBox(height: 300, width: 300, child: Icon(Icons.error)),
             ),
             Positioned(
-              bottom: 10, right: 10,
+              bottom: 10,
+              right: 10,
               child: GestureDetector(
-                onTap: () => widget.onDownload(url),
+                onTap: () => onDownload(url),
                 child: Container(
                   padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), shape: BoxShape.circle),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.7),
+                    shape: BoxShape.circle,
+                  ),
                   child: const Icon(Icons.download_rounded, color: Colors.white, size: 20),
                 ),
               ),
@@ -1325,29 +1514,26 @@ class _ChatBubbleState extends State<ChatBubble> {
     );
   }
 
-  Widget _buildGeneratingState() {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      child: Row(
-        children: [
-          SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue)),
-          const SizedBox(width: 10),
-          const TypingIndicator(),
-        ],
-      ),
-    );
-  }
-
   Widget _buildErrorState() {
     return Container(
+      margin: const EdgeInsets.only(top: 8),
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(color: const Color(0xFFFFF0F0), borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFFFFCDCD))),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF0F0),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFFCDCD)),
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           const Icon(Icons.error_outline, color: Colors.redAccent, size: 20),
           const SizedBox(width: 8),
-          Flexible(child: Text(widget.message.text, style: const TextStyle(color: Colors.redAccent))),
+          Flexible(
+            child: Text(
+              message.text,
+              style: const TextStyle(color: Colors.redAccent),
+            ),
+          ),
         ],
       ),
     );
@@ -1355,61 +1541,73 @@ class _ChatBubbleState extends State<ChatBubble> {
 }
 
 // ---------------------------------------------------------------------------
-// PROFESSIONAL CODE BLOCK
+// MARKDOWN CODE BLOCK BUILDER
 // ---------------------------------------------------------------------------
 
 class CodeBlockBuilder extends MarkdownElementBuilder {
-  final Function(String, {bool isError}) onToast;
-  CodeBlockBuilder(this.onToast);
-
   @override
   Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
-    var language = "CODE";
+    var language = '';
     if (element.attributes['class'] != null) {
       String lg = element.attributes['class'] as String;
-      language = lg.replaceFirst('language-', '').toUpperCase();
+      language = lg.substring(9);
     }
-    final text = element.textContent.trim();
+    return CodeBlockWidget(code: element.textContent, language: language);
+  }
+}
 
+class CodeBlockWidget extends StatelessWidget {
+  final String code;
+  final String language;
+
+  const CodeBlockWidget({super.key, required this.code, required this.language});
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.symmetric(vertical: 10),
-      decoration: BoxDecoration(color: const Color(0xFF282c34), borderRadius: BorderRadius.circular(8)),
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF282C34),
+        borderRadius: BorderRadius.circular(8),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: const BoxDecoration(
-              color: Color(0xFF21252b),
+              color: Color(0xFF21252B),
               borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(language, style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
+                Text(language.isEmpty ? 'CODE' : language.toUpperCase(),
+                    style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
                 GestureDetector(
                   onTap: () {
-                    Clipboard.setData(ClipboardData(text: text));
-                    onToast("Code copied!");
+                     Clipboard.setData(ClipboardData(text: code));
+                     // Simple toast workaround since we are in a widget
+                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Copied to clipboard"), duration: Duration(milliseconds: 600)));
                   },
-                  child: Row(
-                    children: const [
-                      Icon(Icons.copy, size: 14, color: Colors.grey),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.copy, color: Colors.grey, size: 14),
                       SizedBox(width: 4),
                       Text("Copy", style: TextStyle(color: Colors.grey, fontSize: 12)),
                     ],
                   ),
-                )
+                ),
               ],
             ),
           ),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: HighlightView(
-              text,
-              language: language.toLowerCase(),
+              code,
+              language: language.isEmpty ? 'plaintext' : language,
               theme: atomOneDarkTheme,
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(12),
               textStyle: const TextStyle(fontFamily: 'monospace', fontSize: 14),
             ),
           ),
@@ -1420,11 +1618,116 @@ class CodeBlockBuilder extends MarkdownElementBuilder {
 }
 
 // ---------------------------------------------------------------------------
-// UTILS
+// CUSTOM GALLERY PICKER
 // ---------------------------------------------------------------------------
+
+class CustomGalleryPicker extends StatefulWidget {
+  const CustomGalleryPicker({super.key});
+
+  @override
+  State<CustomGalleryPicker> createState() => _CustomGalleryPickerState();
+}
+
+class _CustomGalleryPickerState extends State<CustomGalleryPicker> {
+  List<AssetEntity> _images = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchImages();
+  }
+
+  Future<void> _fetchImages() async {
+    final albums = await PhotoManager.getAssetPathList(type: RequestType.image, onlyAll: true);
+    if (albums.isNotEmpty) {
+      final recent = await albums.first.getAssetListRange(start: 0, end: 60); // Get top 60
+      setState(() {
+        _images = recent;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.7,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("Gallery", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 16),
+          Expanded(
+            child: _images.isEmpty 
+              ? const Center(child: CircularProgressIndicator())
+              : GridView.builder(
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    crossAxisSpacing: 4,
+                    mainAxisSpacing: 4,
+                  ),
+                  itemCount: _images.length,
+                  itemBuilder: (_, index) {
+                    return GestureDetector(
+                      onTap: () async {
+                         File? file = await _images[index].file;
+                         if (mounted) Navigator.pop(context, file);
+                      },
+                      child: AssetEntityImage(
+                         _images[index],
+                         isOriginal: false, // Thumbnail
+                         thumbnailSize: const ThumbnailSize.square(200),
+                         fit: BoxFit.cover,
+                      ),
+                    );
+                  },
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MY STUFF PAGE
+// ---------------------------------------------------------------------------
+
+class MyStuffPage extends StatelessWidget {
+  final List<String> images;
+  const MyStuffPage({super.key, required this.images});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("My Stuff")),
+      body: GridView.builder(
+        padding: const EdgeInsets.all(4),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3, 
+          crossAxisSpacing: 4, 
+          mainAxisSpacing: 4
+        ),
+        itemCount: images.length,
+        itemBuilder: (ctx, i) {
+          return GestureDetector(
+             onTap: () {
+                // Open full view logic if needed, or re-use bubble preview
+             },
+             child: ClipRRect(
+               borderRadius: BorderRadius.circular(4),
+               child: CachedNetworkImage(imageUrl: images[i], fit: BoxFit.cover),
+             ),
+          );
+        },
+      ),
+    );
+  }
+}
 
 class WelcomePlaceholder extends StatelessWidget {
   const WelcomePlaceholder({super.key});
+
   @override
   Widget build(BuildContext context) {
     return Center(
@@ -1432,13 +1735,14 @@ class WelcomePlaceholder extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Container(
-            width: 80, height: 80,
-            decoration: const BoxDecoration(
-              image: DecorationImage(image: AssetImage('android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png'))
-            ),
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(color: Colors.grey[50], shape: BoxShape.circle),
+            child: const Icon(Icons.auto_awesome_rounded, size: 40, color: Colors.black87),
           ),
           const SizedBox(height: 24),
-          const Text("What can I help you with?", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          const Text("What can I create for you?", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          const Text("Select a model or type a prompt", style: TextStyle(color: Colors.grey)),
         ],
       ),
     );
@@ -1447,27 +1751,48 @@ class WelcomePlaceholder extends StatelessWidget {
 
 class TypingIndicator extends StatefulWidget {
   const TypingIndicator({super.key});
+
   @override
   State<TypingIndicator> createState() => _TypingIndicatorState();
 }
 
 class _TypingIndicatorState extends State<TypingIndicator> with SingleTickerProviderStateMixin {
-  late AnimationController _c;
+  late AnimationController _controller;
+
   @override
-  void initState() { super.initState(); _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat(); }
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat();
+  }
+
   @override
-  void dispose() { _c.dispose(); super.dispose(); }
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 40,
+      width: 50,
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: List.generate(3, (i) => AnimatedBuilder(
-          animation: _c,
-          builder: (ctx, child) => Opacity(opacity: (sin((_c.value * 2 * pi) + i) + 1) / 2 * 0.6 + 0.4, child: child),
-          child: const CircleAvatar(radius: 3, backgroundColor: Colors.black87),
-        )),
+        mainAxisAlignment: MainAxisAlignment.start, // Left aligned
+        children: List.generate(3, (index) {
+          return AnimatedBuilder(
+            animation: _controller,
+            builder: (context, child) {
+              final double value = sin((_controller.value * 2 * pi) + (index * 1.0));
+              return Opacity(
+                opacity: (value + 1) / 2.0 * 0.6 + 0.4,
+                child: Container(
+                  margin: const EdgeInsets.only(right: 4),
+                  width: 8, height: 8,
+                  decoration: const BoxDecoration(color: Colors.black87, shape: BoxShape.circle),
+                ),
+              );
+            },
+          );
+        }),
       ),
     );
   }
