@@ -1,17 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.skygen_ai">
 
-    <!-- ইন্টারনেট পারমিশন (খুবই গুরুত্বপূর্ণ) -->
     <uses-permission android:name="android.permission.INTERNET"/>
-
-    <!-- ইমেজ গ্যালারিতে সেভ করার পারমিশন (অপশনাল কিন্তু ভালো) -->
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+    <!-- Storage Permissions -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+    <!-- Android 13+ Media Permissions -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
 
     <application
         android:label="SkyGen AI"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:requestLegacyExternalStorage="true">
         
         <activity
             android:name=".MainActivity"
@@ -22,7 +23,6 @@
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
             
-            <!-- Flutter থিম কনফিগারেশন -->
             <meta-data
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
@@ -34,7 +34,6 @@
             </intent-filter>
         </activity>
         
-        <!-- Flutter ইঞ্জিন মেটাডাটা -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
