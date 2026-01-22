@@ -12,16 +12,16 @@ import 'package:path_provider/path_provider.dart';
 // ---------------------------------------------------------------------------
 
 void main() {
-  // Ensure bindings are initialized before calling native code (path_provider)
+  // Ensure bindings are initialized before calling native code
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Set preferred orientation to portrait only for mobile layout stability
+  // Set preferred orientation
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
 
-  // Set system UI overlay style for dark theme integration
+  // Set system UI overlay style
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
@@ -81,7 +81,7 @@ enum GenStatus { waiting, generating, completed, error, stopped }
 
 class ChatMessage {
   final String id;
-  final String text; // Prompt for user, or status text for AI
+  final String text; 
   final MessageType type;
   String? imageUrl;
   GenStatus status;
@@ -96,7 +96,6 @@ class ChatMessage {
     required this.timestamp,
   });
 
-  // Convert to Map for JSON storage
   Map<String, dynamic> toMap() {
     return {
       'id': id,
@@ -108,7 +107,6 @@ class ChatMessage {
     };
   }
 
-  // Create from Map
   factory ChatMessage.fromMap(Map<String, dynamic> map) {
     return ChatMessage(
       id: map['id'],
@@ -138,10 +136,8 @@ class _ChatScreenState extends State<ChatScreen> {
   final List<ChatMessage> _messages = [];
   
   bool _isGenerating = false;
-  String? _currentGenId; // ID from API 1
+  String? _currentGenId; 
   bool _stopRequested = false;
-
-  // Persistence File
   File? _historyFile;
 
   @override
@@ -150,11 +146,10 @@ class _ChatScreenState extends State<ChatScreen> {
     _initStorage();
   }
 
-  // Initialize local storage (File based, no SharedPrefs needed)
   Future<void> _initStorage() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      _historyFile = File('${dir.path}/chat_history.json');
+      _historyFile = File('${dir.path}/chat_history_v2.json');
       
       if (await _historyFile!.exists()) {
         final content = await _historyFile!.readAsString();
@@ -162,7 +157,6 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() {
           _messages.addAll(jsonList.map((e) => ChatMessage.fromMap(e)).toList());
         });
-        // Scroll to bottom after loading
         WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
       }
     } catch (e) {
@@ -170,7 +164,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // Save chat to local file
   Future<void> _saveHistory() async {
     if (_historyFile == null) return;
     try {
@@ -184,7 +177,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _scrollToBottom() {
     if (_scrollController.hasClients) {
       _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent + 200, // Extra padding
+        _scrollController.position.maxScrollExtent + 200, 
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeOut,
       );
@@ -199,7 +192,6 @@ class _ChatScreenState extends State<ChatScreen> {
     final prompt = _promptController.text.trim();
     if (prompt.isEmpty) return;
 
-    // 1. Add User Message
     final userMsg = ChatMessage(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       text: prompt,
@@ -217,7 +209,6 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
     _saveHistory();
 
-    // 2. Add Placeholder AI Message
     final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
     final aiMsg = ChatMessage(
       id: aiMsgId,
@@ -232,9 +223,7 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     _scrollToBottom();
 
-    // 3. Start API Call
     try {
-      // API 1: Request Generation
       final genUrl = Uri.parse("https://gen-z-image.vercel.app/gen");
       final response = await http.post(
         genUrl,
@@ -247,8 +236,6 @@ class _ChatScreenState extends State<ChatScreen> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         _currentGenId = data["results"]["id"];
-        
-        // Start Polling
         await _pollForImage(aiMsgId, _currentGenId!);
       } else {
         throw Exception("Server rejected request");
@@ -256,18 +243,19 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       _updateMessageStatus(aiMsgId, GenStatus.error, errorText: "Failed: ${e.toString()}");
     } finally {
-      setState(() {
-        _isGenerating = false;
-        _currentGenId = null;
-      });
-      _saveHistory();
+      if (mounted) {
+        setState(() {
+          _isGenerating = false;
+          _currentGenId = null;
+        });
+        _saveHistory();
+      }
     }
   }
 
-  // API 2: Poll for result
   Future<void> _pollForImage(String msgId, String generationId) async {
     int attempts = 0;
-    const maxAttempts = 30; // 60 seconds timeout approx
+    const maxAttempts = 30; // 60 seconds
     
     while (attempts < maxAttempts) {
       if (_stopRequested) {
@@ -286,25 +274,23 @@ class _ChatScreenState extends State<ChatScreen> {
           final List<dynamic> urls = data["results"]["urls"] ?? [];
 
           if (urls.isNotEmpty) {
-            // Success!
             _updateMessageStatus(msgId, GenStatus.completed, imageUrl: urls.first);
             return;
           }
-          // If empty, it's still processing, loop continues
         }
       } catch (e) {
-        // Network flicker, just continue
         debugPrint("Polling error: $e");
       }
 
       attempts++;
     }
     
-    // Timeout
     _updateMessageStatus(msgId, GenStatus.error, errorText: "Timeout: Generation took too long.");
   }
 
   void _updateMessageStatus(String id, GenStatus status, {String? imageUrl, String? errorText}) {
+    if (!mounted) return;
+    
     final index = _messages.indexWhere((m) => m.id == id);
     if (index != -1) {
       setState(() {
@@ -329,10 +315,6 @@ class _ChatScreenState extends State<ChatScreen> {
       _stopRequested = true;
     });
   }
-
-  // -------------------------------------------------------------------------
-  // IMAGE DOWNLOAD LOGIC
-  // -------------------------------------------------------------------------
 
   Future<void> _downloadImage(String url) async {
     try {
@@ -393,7 +375,6 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Column(
         children: [
-          // Chat List
           Expanded(
             child: _messages.isEmpty
                 ? const EmptyState()
@@ -409,8 +390,6 @@ class _ChatScreenState extends State<ChatScreen> {
                     },
                   ),
           ),
-
-          // Input Area
           SafeArea(
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -499,7 +478,6 @@ class MessageBubble extends StatelessWidget {
       child: Column(
         crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         children: [
-          // Header (Name)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4),
             child: Text(
@@ -512,8 +490,6 @@ class MessageBubble extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 6),
-          
-          // Content
           isUser
             ? _buildUserBubble(context)
             : _buildAIBubble(context),
@@ -548,7 +524,6 @@ class MessageBubble extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Logic for Image State
           if (message.status == GenStatus.completed && message.imageUrl != null)
             _buildImageCard(context, message.imageUrl!)
           else if (message.status == GenStatus.generating)
