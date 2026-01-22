@@ -1,102 +1,58 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 
-// -----------------------------------------------------------------------------
-// MAIN ENTRY POINT
-// -----------------------------------------------------------------------------
-
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  
-  // Initialize Shared Preferences before app start
-  final prefs = await SharedPreferences.getInstance();
-  
-  runApp(SkyGenApp(prefs: prefs));
-}
-
-class SkyGenApp extends StatelessWidget {
-  final SharedPreferences prefs;
-
-  const SkyGenApp({super.key, required this.prefs});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'SkyGen AI',
-      theme: ThemeData.dark(useMaterial3: true).copyWith(
-        scaffoldBackgroundColor: const Color(0xFF101010),
-        colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF4facfe),
-          secondary: Color(0xFF00f2fe),
-          surface: Color(0xFF1E1E1E),
-          background: Color(0xFF101010),
-        ),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF101010),
-          elevation: 0,
-          surfaceTintColor: Colors.transparent,
-        ),
-      ),
-      home: ChatScreen(prefs: prefs),
-    );
-  }
+void main() {
+  runApp(const SkyGenApp());
 }
 
 // -----------------------------------------------------------------------------
-// DATA MODELS
+// MODELS
 // -----------------------------------------------------------------------------
-
-enum MessageRole { user, ai }
-enum MessageStatus { sending, loading, generating, complete, error }
 
 class ChatMessage {
   final String id;
-  final MessageRole role;
-  final String text;      // For User
-  String? imageUrl;       // For AI
-  String? localPath;      // For Downloaded Image
-  MessageStatus status;
+  final String role; // 'user' or 'ai'
+  final String text;
+  String imageUrl;
+  String localPath;
+  String status; // 'typing', 'generating', 'done', 'error'
   final DateTime timestamp;
 
   ChatMessage({
     required this.id,
     required this.role,
     required this.text,
-    this.imageUrl,
-    this.localPath,
-    required this.status,
+    this.imageUrl = "",
+    this.localPath = "",
+    this.status = "done",
     required this.timestamp,
   });
 
   Map<String, dynamic> toJson() => {
-    'id': id,
-    'role': role.toString(),
-    'text': text,
-    'imageUrl': imageUrl,
-    'localPath': localPath,
-    'status': status.toString(),
-    'timestamp': timestamp.toIso8601String(),
-  };
+        "id": id,
+        "role": role,
+        "text": text,
+        "imageUrl": imageUrl,
+        "localPath": localPath,
+        "status": status,
+        "timestamp": timestamp.toIso8601String(),
+      };
 
-  factory ChatMessage.fromJson(Map<String, dynamic> json) {
-    return ChatMessage(
-      id: json['id'],
-      role: MessageRole.values.firstWhere((e) => e.toString() == json['role']),
-      text: json['text'],
-      imageUrl: json['imageUrl'],
-      localPath: json['localPath'],
-      status: MessageStatus.values.firstWhere((e) => e.toString() == json['status']),
-      timestamp: DateTime.parse(json['timestamp']),
-    );
-  }
+  factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
+        id: json["id"],
+        role: json["role"],
+        text: json["text"],
+        imageUrl: json["imageUrl"] ?? "",
+        localPath: json["localPath"] ?? "",
+        status: json["status"] ?? "done",
+        timestamp: DateTime.parse(json["timestamp"]),
+      );
 }
 
 class ChatSession {
@@ -113,339 +69,323 @@ class ChatSession {
   });
 
   Map<String, dynamic> toJson() => {
-    'id': id,
-    'title': title,
-    'createdAt': createdAt.toIso8601String(),
-    'messages': messages.map((m) => m.toJson()).toList(),
-  };
+        "id": id,
+        "title": title,
+        "createdAt": createdAt.toIso8601String(),
+        "messages": messages.map((m) => m.toJson()).toList(),
+      };
 
-  factory ChatSession.fromJson(Map<String, dynamic> json) {
-    return ChatSession(
-      id: json['id'],
-      title: json['title'],
-      createdAt: DateTime.parse(json['createdAt']),
-      messages: (json['messages'] as List)
-          .map((m) => ChatMessage.fromJson(m))
-          .toList(),
-    );
-  }
+  factory ChatSession.fromJson(Map<String, dynamic> json) => ChatSession(
+        id: json["id"],
+        title: json["title"],
+        createdAt: DateTime.parse(json["createdAt"]),
+        messages: (json["messages"] as List)
+            .map((m) => ChatMessage.fromJson(m))
+            .toList(),
+      );
 }
 
 // -----------------------------------------------------------------------------
-// CHAT CONTROLLER / PROVIDER LOGIC
+// MAIN APP
 // -----------------------------------------------------------------------------
 
-class ChatController extends ChangeNotifier {
-  final SharedPreferences prefs;
-  List<ChatSession> sessions = [];
-  String? currentSessionId;
-  final ScrollController scrollController = ScrollController();
-  bool isTyping = false;
+class SkyGenApp extends StatelessWidget {
+  const SkyGenApp({super.key});
 
-  ChatController(this.prefs) {
-    loadSessions();
-  }
-
-  ChatSession? get currentSession {
-    if (currentSessionId == null) return null;
-    try {
-      return sessions.firstWhere((s) => s.id == currentSessionId);
-    } catch (e) {
-      return null;
-    }
-  }
-
-  void loadSessions() {
-    final String? data = prefs.getString('chat_history');
-    if (data != null) {
-      final List<dynamic> jsonList = jsonDecode(data);
-      sessions = jsonList.map((json) => ChatSession.fromJson(json)).toList();
-      // Sort by newest first
-      sessions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    }
-    
-    if (sessions.isNotEmpty) {
-      currentSessionId = sessions.first.id;
-    } else {
-      createNewSession();
-    }
-    notifyListeners();
-  }
-
-  void saveSessions() {
-    final String data = jsonEncode(sessions.map((s) => s.toJson()).toList());
-    prefs.setString('chat_history', data);
-    notifyListeners();
-  }
-
-  void createNewSession() {
-    final newSession = ChatSession(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      title: "New Chat",
-      createdAt: DateTime.now(),
-      messages: [],
-    );
-    sessions.insert(0, newSession);
-    currentSessionId = newSession.id;
-    saveSessions();
-    
-    // Auto scroll to bottom reset
-    if(scrollController.hasClients) {
-      scrollController.jumpTo(0);
-    }
-  }
-
-  void switchSession(String sessionId) {
-    currentSessionId = sessionId;
-    notifyListeners();
-    // Small delay to allow UI to build then scroll to bottom
-    Future.delayed(const Duration(milliseconds: 100), scrollToBottom);
-  }
-
-  void scrollToBottom() {
-    if (scrollController.hasClients) {
-      scrollController.animateTo(
-        scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
-      );
-    }
-  }
-
-  // CORE IMAGE GENERATION LOGIC
-  Future<void> sendMessage(String prompt) async {
-    if (currentSession == null) createNewSession();
-    final session = currentSession!;
-
-    // 1. Update Title if it's the first message
-    if (session.messages.isEmpty) {
-      session.title = prompt.length > 20 ? "${prompt.substring(0, 20)}..." : prompt;
-    }
-
-    // 2. Add User Message
-    final userMsg = ChatMessage(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      role: MessageRole.user,
-      text: prompt,
-      status: MessageStatus.complete,
-      timestamp: DateTime.now(),
-    );
-    session.messages.add(userMsg);
-    notifyListeners();
-    scrollToBottom();
-
-    // 3. Add AI Placeholder (Loading)
-    isTyping = true;
-    notifyListeners();
-    
-    // Simulate "Reading" time
-    await Future.delayed(const Duration(milliseconds: 600));
-
-    final aiMsgId = "${DateTime.now().millisecondsSinceEpoch}_ai";
-    final aiMsg = ChatMessage(
-      id: aiMsgId,
-      role: MessageRole.ai,
-      text: "Generating image...",
-      status: MessageStatus.generating,
-      timestamp: DateTime.now(),
-    );
-    
-    session.messages.add(aiMsg);
-    isTyping = false;
-    notifyListeners();
-    scrollToBottom();
-
-    // 4. API Call
-    try {
-      // Step A: Request Generation
-      final url = Uri.parse("https://gen-z-image.vercel.app/gen");
-      final response = await http.post(
-        url,
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"q": prompt}),
-      );
-
-      if (response.statusCode != 200) throw Exception("API Error");
-
-      final data = jsonDecode(response.body);
-      final String generationId = data["results"]["id"];
-
-      // Step B: Wait (Simulate processing)
-      await Future.delayed(const Duration(seconds: 6));
-
-      // Step C: Check Result
-      final checkUrl = Uri.parse("https://gen-z-image.vercel.app/check?id=$generationId");
-      final checkResponse = await http.get(checkUrl);
-
-      final checkData = jsonDecode(checkResponse.body);
-      final List<dynamic> urls = checkData["results"]["urls"];
-      
-      if (urls.isNotEmpty) {
-        // Update Message to Complete
-        aiMsg.imageUrl = urls[0];
-        aiMsg.status = MessageStatus.complete;
-      } else {
-        throw Exception("No image returned");
-      }
-
-    } catch (e) {
-      aiMsg.status = MessageStatus.error;
-      aiMsg.text = "Failed to generate image. Please try again.";
-    }
-
-    saveSessions();
-    scrollToBottom();
-  }
-
-  Future<void> downloadImage(String url, BuildContext context) async {
-    try {
-      final dir = await getExternalStorageDirectory(); // Or getApplicationDocumentsDirectory
-      // Create a specific folder if needed, or just save to root of app storage
-      final fileName = "SkyGen_${DateTime.now().millisecondsSinceEpoch}.png";
-      final savePath = "${dir!.path}/$fileName";
-      final file = File(savePath);
-
-      final response = await http.get(Uri.parse(url));
-      await file.writeAsBytes(response.bodyBytes);
-
-      // Find message and update local path
-      // (Simplified: In a real app we'd search properly, here we assume current context)
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Image saved to $savePath"),
-          backgroundColor: Colors.green,
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'SkyGen',
+      theme: ThemeData.dark(useMaterial3: true).copyWith(
+        scaffoldBackgroundColor: const Color(0xff0F0F0F),
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xff6C63FF),
+          secondary: Color(0xff03DAC6),
+          surface: Color(0xff1E1E1E),
         ),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Download failed"), backgroundColor: Colors.red),
-      );
-    }
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xff0F0F0F),
+          elevation: 0,
+        ),
+      ),
+      home: const ChatScreen(),
+    );
   }
 }
 
 // -----------------------------------------------------------------------------
-// UI SCREEN
+// CHAT SCREEN
 // -----------------------------------------------------------------------------
 
 class ChatScreen extends StatefulWidget {
-  final SharedPreferences prefs;
-  const ChatScreen({super.key, required this.prefs});
+  const ChatScreen({super.key});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  late ChatController controller;
-  final TextEditingController textController = TextEditingController();
-  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  final TextEditingController _promptController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  
+  List<ChatSession> _sessions = [];
+  String? _currentSessionId;
+  bool _isLoading = false;
 
   @override
   void initState() {
     super.initState();
-    controller = ChatController(widget.prefs);
+    _loadHistory();
   }
+
+  // --- STORAGE & HISTORY MANAGEMENT ---
+
+  Future<void> _loadHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<String> sessionIds = prefs.getStringList('chat_sessions') ?? [];
+    List<ChatSession> loadedSessions = [];
+
+    for (String id in sessionIds) {
+      final String? data = prefs.getString('session_$id');
+      if (data != null) {
+        loadedSessions.add(ChatSession.fromJson(jsonDecode(data)));
+      }
+    }
+
+    // Sort by date new to old
+    loadedSessions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    setState(() {
+      _sessions = loadedSessions;
+      if (_sessions.isNotEmpty) {
+        _currentSessionId = _sessions.first.id;
+      } else {
+        _createNewSession();
+      }
+    });
+    
+    // Scroll to bottom after load
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  Future<void> _saveSession(ChatSession session) async {
+    final prefs = await SharedPreferences.getInstance();
+    
+    // Save specific session data
+    await prefs.setString('session_${session.id}', jsonEncode(session.toJson()));
+
+    // Update list of IDs if new
+    List<String> sessionIds = prefs.getStringList('chat_sessions') ?? [];
+    if (!sessionIds.contains(session.id)) {
+      sessionIds.add(session.id);
+      await prefs.setStringList('chat_sessions', sessionIds);
+    }
+  }
+
+  void _createNewSession() {
+    final newId = DateTime.now().millisecondsSinceEpoch.toString();
+    final newSession = ChatSession(
+      id: newId,
+      title: "New Chat",
+      createdAt: DateTime.now(),
+      messages: [],
+    );
+
+    setState(() {
+      _sessions.insert(0, newSession);
+      _currentSessionId = newId;
+    });
+    _saveSession(newSession);
+  }
+
+  void _switchSession(String sessionId) {
+    setState(() {
+      _currentSessionId = sessionId;
+    });
+    Navigator.pop(context); // Close drawer
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  ChatSession get currentSession {
+    return _sessions.firstWhere((s) => s.id == _currentSessionId);
+  }
+
+  // --- UI ACTIONS ---
+
+  void _scrollToBottom() {
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  Future<void> _sendMessage() async {
+    final text = _promptController.text.trim();
+    if (text.isEmpty || _isLoading) return;
+
+    _promptController.clear();
+    FocusScope.of(context).unfocus();
+
+    final session = currentSession;
+
+    // 1. Add User Message
+    final userMsg = ChatMessage(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      role: "user",
+      text: text,
+      timestamp: DateTime.now(),
+    );
+
+    setState(() {
+      session.messages.add(userMsg);
+      // Update title if it's the first message
+      if (session.messages.length == 1) {
+        session.title = text.length > 20 ? "${text.substring(0, 20)}..." : text;
+      }
+      _isLoading = true;
+    });
+    _scrollToBottom();
+    _saveSession(session);
+
+    // 2. Add AI Placeholder (Typing/Generating)
+    final aiMsgId = "${DateTime.now().millisecondsSinceEpoch}_ai";
+    final aiMsg = ChatMessage(
+      id: aiMsgId,
+      role: "ai",
+      text: "",
+      status: "generating", // Start directly with generating for image flow
+      timestamp: DateTime.now(),
+    );
+
+    setState(() {
+      session.messages.add(aiMsg);
+    });
+    _scrollToBottom();
+
+    // 3. API Logic
+    try {
+      await _generateImageApi(text, session, aiMsg);
+    } catch (e) {
+      setState(() {
+        aiMsg.status = "error";
+        aiMsg.text = "Error generating image.";
+        _isLoading = false;
+      });
+      _saveSession(session);
+    }
+  }
+
+  Future<void> _generateImageApi(String prompt, ChatSession session, ChatMessage aiMsg) async {
+    // API 1: Request Generation
+    final url1 = Uri.parse("https://gen-z-image.vercel.app/gen");
+    final res1 = await http.post(
+      url1,
+      headers: {"Content-Type": "application/json"},
+      body: jsonEncode({"q": prompt}),
+    );
+
+    if (res1.statusCode != 200) throw Exception("Failed to start generation");
+
+    final data1 = jsonDecode(res1.body);
+    final String id = data1["results"]["id"];
+
+    // Wait 6 seconds
+    await Future.delayed(const Duration(seconds: 6));
+
+    // API 2: Check Result
+    final url2 = Uri.parse("https://gen-z-image.vercel.app/check?id=$id");
+    final res2 = await http.get(url2);
+
+    if (res2.statusCode != 200) throw Exception("Failed to fetch image");
+
+    final data2 = jsonDecode(res2.body);
+    final List urls = data2["results"]["urls"];
+
+    if (urls.isEmpty) throw Exception("No image returned");
+
+    final String imageUrl = urls[0];
+
+    // Update AI Message
+    setState(() {
+      aiMsg.imageUrl = imageUrl;
+      aiMsg.status = "done";
+      _isLoading = false;
+    });
+
+    _saveSession(session);
+    _scrollToBottom();
+  }
+
+  Future<void> _downloadImage(String imageUrl, BuildContext context) async {
+    try {
+      final dir = await getExternalStorageDirectory();
+      if (dir == null) return;
+
+      final fileName = "SkyGen_${DateTime.now().millisecondsSinceEpoch}.png";
+      final savePath = "${dir.path}/$fileName";
+      final file = File(savePath);
+
+      final res = await http.get(Uri.parse(imageUrl));
+      await file.writeAsBytes(res.bodyBytes);
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Image saved to $savePath"),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Failed to save image")),
+        );
+      }
+    }
+  }
+
+  // --- BUILD METHODS ---
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: controller,
-      builder: (context, child) {
-        final session = controller.currentSession;
-        
-        return Scaffold(
-          key: _scaffoldKey,
-          backgroundColor: const Color(0xFF101010),
-          drawer: _buildDrawer(),
-          appBar: AppBar(
-            backgroundColor: const Color(0xFF141414),
-            leading: IconButton(
-              icon: const Icon(Icons.history, color: Colors.white70),
-              onPressed: () => _scaffoldKey.currentState?.openDrawer(),
-            ),
-            title: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text("SkyGen AI", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                if (session != null)
-                  Text(
-                    session.title, 
-                    style: const TextStyle(fontSize: 12, color: Colors.white54, overflow: TextOverflow.ellipsis),
-                  ),
-              ],
-            ),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.add, color: Colors.blueAccent),
-                onPressed: () {
-                  controller.createNewSession();
-                },
-              )
-            ],
-          ),
-          body: Column(
-            children: [
-              // Chat Area
-              Expanded(
-                child: session == null || session.messages.isEmpty
-                  ? _buildEmptyState()
-                  : ListView.builder(
-                      controller: controller.scrollController,
-                      padding: const EdgeInsets.only(bottom: 20, top: 10),
-                      itemCount: session.messages.length + (controller.isTyping ? 1 : 0),
-                      itemBuilder: (context, index) {
-                        if (index == session.messages.length) {
-                           // Show typing indicator
-                           return const Padding(
-                             padding: EdgeInsets.only(left: 16, bottom: 12),
-                             child: TypingIndicator(),
-                           );
-                        }
-                        return ChatBubble(
-                          message: session.messages[index], 
-                          onDownload: (url) => controller.downloadImage(url, context),
-                        );
-                      },
-                    ),
-              ),
+    if (_sessions.isEmpty) {
+       // Minimal loading state or init logic
+       return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
 
-              // Input Area
-              _buildInputArea(),
-            ],
-          ),
-        );
-      },
-    );
-  }
+    final session = currentSession;
 
-  Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("SkyGen", style: TextStyle(fontWeight: FontWeight.bold)),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add),
+            onPressed: _createNewSession,
+            tooltip: "New Chat",
+          ),
+        ],
+      ),
+      drawer: _buildDrawer(),
+      body: Column(
         children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1E1E1E),
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(color: Colors.blueAccent.withOpacity(0.2), blurRadius: 20, spreadRadius: 5)
-              ]
+          Expanded(
+            child: ListView.builder(
+              controller: _scrollController,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+              itemCount: session.messages.length,
+              itemBuilder: (context, index) {
+                final msg = session.messages[index];
+                return _buildMessageBubble(msg);
+              },
             ),
-            child: const Icon(Icons.auto_awesome, size: 50, color: Colors.blueAccent),
           ),
-          const SizedBox(height: 20),
-          const Text(
-            "SkyGen Image AI",
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
-          ),
-          const SizedBox(height: 10),
-          const Text(
-            "Imagine anything. Create everything.",
-            style: TextStyle(color: Colors.white54),
-          ),
+          _buildInputArea(),
         ],
       ),
     );
@@ -453,332 +393,180 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildDrawer() {
     return Drawer(
-      backgroundColor: const Color(0xFF121212),
+      backgroundColor: const Color(0xff141414),
       child: Column(
         children: [
-          SafeArea(
-            child: Container(
-              padding: const EdgeInsets.all(20),
-              child: Row(
-                children: [
-                  const Icon(Icons.auto_awesome, color: Colors.blueAccent),
-                  const SizedBox(width: 10),
-                  const Text("History", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.add_circle_outline, color: Colors.white54),
-                    onPressed: () {
-                      Navigator.pop(context);
-                      controller.createNewSession();
-                    },
-                  )
-                ],
-              ),
+          Container(
+            padding: const EdgeInsets.only(top: 60, bottom: 20, left: 20),
+            width: double.infinity,
+            color: const Color(0xff1E1E1E),
+            child: const Text(
+              "History",
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
             ),
           ),
-          const Divider(color: Colors.white10),
           Expanded(
             child: ListView.builder(
-              itemCount: controller.sessions.length,
+              padding: EdgeInsets.zero,
+              itemCount: _sessions.length,
               itemBuilder: (context, index) {
-                final s = controller.sessions[index];
-                final isSelected = s.id == controller.currentSessionId;
+                final s = _sessions[index];
+                final isSelected = s.id == _currentSessionId;
                 return ListTile(
-                  tileColor: isSelected ? const Color(0xFF1E1E1E) : null,
+                  tileColor: isSelected ? Colors.white10 : null,
                   title: Text(
                     s.title,
-                    style: TextStyle(
-                      color: isSelected ? Colors.white : Colors.white70,
-                      fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal
-                    ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: isSelected ? Colors.white : Colors.white70,
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                    ),
                   ),
                   subtitle: Text(
                     DateFormat('MMM d, h:mm a').format(s.createdAt),
-                    style: const TextStyle(color: Colors.white24, fontSize: 11),
+                    style: const TextStyle(color: Colors.white38, fontSize: 12),
                   ),
-                  onTap: () {
-                    controller.switchSession(s.id);
-                    Navigator.pop(context);
-                  },
+                  onTap: () => _switchSession(s.id),
                 );
               },
             ),
-          )
+          ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildMessageBubble(ChatMessage msg) {
+    final isUser = msg.role == 'user';
+    
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.85),
+        decoration: BoxDecoration(
+          color: isUser ? Theme.of(context).colorScheme.primary : const Color(0xff2C2C2C),
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(20),
+            topRight: const Radius.circular(20),
+            bottomLeft: isUser ? const Radius.circular(20) : Radius.zero,
+            bottomRight: isUser ? Radius.zero : const Radius.circular(20),
+          ),
+        ),
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (isUser)
+              Text(
+                msg.text,
+                style: const TextStyle(color: Colors.white, fontSize: 16),
+              ),
+            
+            if (!isUser) ...[
+              if (msg.status == 'generating' || msg.status == 'typing') ...[
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                    SizedBox(width: 10),
+                    Text("Generating image...", style: TextStyle(color: Colors.white70)),
+                  ],
+                ),
+                // Placeholder card
+                Container(
+                  margin: const EdgeInsets.only(top: 10),
+                  height: 200,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: Colors.white10,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                )
+              ] else if (msg.status == 'done' && msg.imageUrl.isNotEmpty) ...[
+                // Image Display
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.network(
+                    msg.imageUrl,
+                    fit: BoxFit.cover,
+                    loadingBuilder: (ctx, child, progress) {
+                      if (progress == null) return child;
+                      return Container(
+                        height: 200,
+                        width: double.infinity,
+                        color: Colors.black26,
+                        child: const Center(child: CircularProgressIndicator()),
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => _downloadImage(msg.imageUrl, context),
+                    icon: const Icon(Icons.download_rounded, size: 18),
+                    label: const Text("Download"),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: const BorderSide(color: Colors.white24),
+                    ),
+                  ),
+                )
+              ] else if (msg.status == 'error') ...[
+                const Text("⚠ Error generating image.", style: TextStyle(color: Colors.redAccent)),
+              ]
+            ]
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildInputArea() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.all(16),
       decoration: const BoxDecoration(
-        color: Color(0xFF141414),
+        color: Color(0xff141414),
         border: Border(top: BorderSide(color: Colors.white10)),
       ),
-      child: SafeArea(
-        child: Row(
-          children: [
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: const Color(0xFF252525),
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                child: TextField(
-                  controller: textController,
-                  style: const TextStyle(color: Colors.white),
-                  minLines: 1,
-                  maxLines: 4,
-                  decoration: const InputDecoration(
-                    hintText: "Describe an image...",
-                    hintStyle: TextStyle(color: Colors.white38),
-                    border: InputBorder.none,
-                    contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                  ),
-                  onSubmitted: (_) => _handleSend(),
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            GestureDetector(
-              onTap: _handleSend,
-              child: Container(
-                padding: const EdgeInsets.all(12),
-                decoration: const BoxDecoration(
-                  color: Colors.blueAccent,
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(Icons.arrow_upward, color: Colors.white),
-              ),
-            )
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _handleSend() {
-    final text = textController.text.trim();
-    if (text.isEmpty) return;
-    textController.clear();
-    FocusScope.of(context).unfocus();
-    controller.sendMessage(text);
-  }
-}
-
-// -----------------------------------------------------------------------------
-// WIDGETS
-// -----------------------------------------------------------------------------
-
-class ChatBubble extends StatelessWidget {
-  final ChatMessage message;
-  final Function(String) onDownload;
-
-  const ChatBubble({super.key, required this.message, required this.onDownload});
-
-  @override
-  Widget build(BuildContext context) {
-    final isUser = message.role == MessageRole.user;
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
-        mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (!isUser) ...[
-            Container(
-              height: 30, width: 30,
-              decoration: const BoxDecoration(color: Colors.blueAccent, shape: BoxShape.circle),
-              child: const Icon(Icons.auto_awesome, size: 16, color: Colors.white),
+          Expanded(
+            child: TextField(
+              controller: _promptController,
+              enabled: !_isLoading,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: "Describe an image...",
+                hintStyle: const TextStyle(color: Colors.white38),
+                filled: true,
+                fillColor: const Color(0xff2C2C2C),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(30),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+              onSubmitted: (_) => _sendMessage(),
             ),
-            const SizedBox(width: 10),
-          ],
-          
-          Flexible(
-            child: isUser 
-              ? Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF2C2C2C),
-                    borderRadius: BorderRadius.circular(20).copyWith(bottomRight: const Radius.circular(4)),
-                  ),
-                  child: Text(
-                    message.text,
-                    style: const TextStyle(color: Colors.white, fontSize: 16),
-                  ),
-                )
-              : _buildAIContent(context),
+          ),
+          const SizedBox(width: 10),
+          GestureDetector(
+            onTap: _isLoading ? null : _sendMessage,
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: _isLoading ? Colors.grey : Theme.of(context).colorScheme.primary,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.arrow_upward, color: Colors.white),
+            ),
           ),
         ],
       ),
     );
   }
-
-  Widget _buildAIContent(BuildContext context) {
-    if (message.status == MessageStatus.generating) {
-      return Container(
-        width: 250,
-        height: 300,
-        decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white10),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: const [
-             CircularProgressIndicator(strokeWidth: 2, color: Colors.blueAccent),
-             SizedBox(height: 16),
-             Text("Generating masterpiece...", style: TextStyle(color: Colors.white54, fontSize: 12))
-          ],
-        ),
-      );
-    }
-
-    if (message.status == MessageStatus.error) {
-      return Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.red.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.redAccent.withOpacity(0.3)),
-        ),
-        child: Text(message.text, style: const TextStyle(color: Colors.redAccent)),
-      );
-    }
-
-    // Image Ready
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: 280, // Constrain width
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.white10),
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: Stack(
-              children: [
-                Image.network(
-                  message.imageUrl!,
-                  fit: BoxFit.cover,
-                  loadingBuilder: (ctx, child, progress) {
-                    if (progress == null) return child;
-                    return Container(
-                      height: 280,
-                      color: const Color(0xFF1E1E1E),
-                      child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-                    );
-                  },
-                ),
-                Positioned(
-                  right: 8,
-                  bottom: 8,
-                  child: GestureDetector(
-                    onTap: () => _showFullScreenImage(context, message.imageUrl!),
-                    child: Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Icon(Icons.fullscreen, color: Colors.white, size: 20),
-                    ),
-                  ),
-                )
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        SizedBox(
-          width: 280,
-          child: OutlinedButton.icon(
-            onPressed: () => onDownload(message.imageUrl!),
-            icon: const Icon(Icons.download_rounded, size: 18),
-            label: const Text("Download"),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.white70,
-              side: const BorderSide(color: Colors.white24),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-          ),
-        )
-      ],
-    );
-  }
-
-  void _showFullScreenImage(BuildContext context, String url) {
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => Scaffold(
-        backgroundColor: Colors.black,
-        appBar: AppBar(backgroundColor: Colors.transparent, iconTheme: const IconThemeData(color: Colors.white)),
-        body: Center(child: Image.network(url)),
-      )
-    ));
-  }
-}
-
-class TypingIndicator extends StatefulWidget {
-  const TypingIndicator({super.key});
-
-  @override
-  State<TypingIndicator> createState() => _TypingIndicatorState();
-}
-
-class _TypingIndicatorState extends State<TypingIndicator> with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat();
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          height: 30, width: 30,
-          decoration: const BoxDecoration(color: Colors.blueAccent, shape: BoxShape.circle),
-          child: const Icon(Icons.auto_awesome, size: 16, color: Colors.white),
-        ),
-        const SizedBox(width: 10),
-        Row(
-          children: List.generate(3, (index) {
-            return FadeTransition(
-              opacity: DelayTween(begin: 0.0, end: 1.0, delay: index * 0.2).animate(_controller),
-              child: Container(
-                margin: const EdgeInsets.symmetric(horizontal: 2),
-                width: 8, height: 8,
-                decoration: const BoxDecoration(color: Colors.white54, shape: BoxShape.circle),
-              ),
-            );
-          }),
-        ),
-      ],
-    );
-  }
-}
-
-// Helper for Staggered Animation
-class DelayTween extends Tween<double> {
-  DelayTween({required double begin, required double end, required this.delay}) : super(begin: begin, end: end);
-  final double delay;
-
-  @override
-  double lerp(double t) => super.lerp((t - delay).clamp(0.0, 1.0));
 }
