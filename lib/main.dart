@@ -2,13 +2,15 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-import 'package:image_picker/image_picker.dart'; // Keep for camera/fallback
+import 'package:image_picker/image_picker.dart'; 
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:permission_handler/permission_handler.dart';
+// Fixed Imports
 import 'package:flutter_highlight/flutter_highlight.dart';
 import 'package:flutter_highlight/themes/atom-one-dark.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -189,11 +191,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   File? _storageFile;
 
   // --- NEW FEATURES VARIABLES ---
-  // Models: SkyGen, Sky-Img, Img Describer, Sky Coder
   String _selectedModel = "SkyGen"; 
   File? _pickedImage;
   String? _uploadedImgBBUrl;
   bool _isUploadingImage = false;
+  bool _showPlusIcon = true; // Added missing variable
   
   // Search Drawer
   bool _isSearchExpanded = false;
@@ -204,13 +206,26 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     _initStorage();
+    _promptController.addListener(_handleInputListener);
   }
 
   @override
   void dispose() {
+    _promptController.removeListener(_handleInputListener);
     _promptController.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _handleInputListener() {
+    // Hide plus icon if multiline
+    final isMultiline = _promptController.text.contains('\n') || _promptController.text.length > 30;
+    if (_showPlusIcon == isMultiline) {
+       setState(() {
+         _showPlusIcon = !isMultiline;
+       });
+    }
+    setState(() {}); 
   }
 
   // --- STORAGE & SESSION MANAGEMENT ---
@@ -444,9 +459,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     final PermissionStatus ps = await Permission.photos.status;
     final PermissionStatus ss = await Permission.storage.status;
     
-    if (ps.isDenied && ss.isDenied && await Permission.photos.request().isDenied) {
-       _showToast("Permission denied", isError: true);
-       return;
+    // Simple permission logic for stability
+    if (ps.isDenied && ss.isDenied) {
+        await Permission.photos.request();
+        await Permission.storage.request();
     }
 
     if (!mounted) return;
@@ -476,7 +492,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         return;
       }
       
-      const apiKey = "0ffd290312c6b0ca9bb005414f44df2f"; 
+      const apiKey = "6d207e02198a847aa98d0a2a901485a5"; 
       final uri = Uri.parse("https://api.imgbb.com/1/upload?key=$apiKey");
       
       var request = http.MultipartRequest('POST', uri);
@@ -660,7 +676,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _scrollToBottom();
 
     try {
-      final body = {"q": prompt};
+      // FIX: Typed as Map<String, dynamic>
+      final Map<String, dynamic> body = {"q": prompt};
       if (extraBody != null) body.addAll(extraBody);
 
       final response = await http.post(
@@ -878,68 +895,23 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   // --- DOWNLOAD & TOAST ---
 
   void _showToast(String message, {bool isError = false}) {
-    showGeneralDialog(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: '',
-      barrierColor: Colors.transparent,
-      transitionDuration: const Duration(milliseconds: 400),
-      pageBuilder: (context, anim1, anim2) {
-        return Align(
-          alignment: Alignment.bottomCenter,
-          child: SlideTransition(
-            position: Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero).animate(CurvedAnimation(parent: anim1, curve: Curves.easeOutBack)),
-            child: Container(
-              margin: EdgeInsets.only(bottom: 80 + MediaQuery.of(context).viewInsets.bottom, left: 20, right: 20),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: isError ? Colors.redAccent : const Color(0xFF333333),
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 8, offset: const Offset(0, 2))],
-              ),
-              child: Material(
-                color: Colors.transparent,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(isError ? Icons.error_outline : Icons.check_circle_outline, color: Colors.white),
-                    const SizedBox(width: 10),
-                    Expanded(child: Text(message, style: const TextStyle(color: Colors.white))),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-    // Auto dismiss handled by user tap or timeout could be added, but dialog stays until tapped outside usually. 
-    // To make it auto-close:
-    Future.delayed(const Duration(seconds: 3), () {
-       if(mounted && Navigator.canPop(context)) {
-          // Navigator.of(context).pop(); // Warning: might pop wrong route. 
-          // For safety in this simpler impl, we let user dismiss or standard snackbar logic.
-          // But implementing true custom toast requires Overlay.
-          // I'll stick to Overlay entry implementation for robustness.
-       }
-    });
+    // For safer implementation, using SnackBar instead of Overlay to prevent build context errors
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Row(
+        children: [
+          Icon(isError ? Icons.error_outline : Icons.check_circle_outline, color: Colors.white),
+          const SizedBox(width: 10),
+          Expanded(child: Text(message)),
+        ],
+      ),
+      backgroundColor: isError ? Colors.redAccent : const Color(0xFF333333),
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      margin: EdgeInsets.only(bottom: MediaQuery.of(context).size.height - 100, left: 10, right: 10),
+    ));
   }
   
-  // Robust Toast
-  void _showOverlayToast(String message, {bool isError = false}) {
-     OverlayEntry overlayEntry;
-     overlayEntry = OverlayEntry(builder: (context) => Positioned(
-       bottom: 90 + MediaQuery.of(context).viewInsets.bottom,
-       left: 20, right: 20,
-       child: Material(
-         color: Colors.transparent,
-         child: SlideToast(message: message, isError: isError),
-       ),
-     ));
-     Overlay.of(context).insert(overlayEntry);
-     Future.delayed(const Duration(seconds: 3), () => overlayEntry.remove());
-  }
-
   Future<void> _downloadImage(String url) async {
     if (Platform.isAndroid) await Permission.storage.request();
 
@@ -961,9 +933,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       final response = await http.get(Uri.parse(url));
       await file.writeAsBytes(response.bodyBytes);
 
-      _showOverlayToast("Saved to ${file.path}");
+      _showToast("Saved to ${file.path}");
     } catch (e) {
-      _showOverlayToast("Save failed", isError: true);
+      _showToast("Save failed", isError: true);
     }
   }
 
@@ -1251,10 +1223,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
                       // CUSTOM PICKER
-                      IconButton(
-                        icon: const Icon(Icons.add, color: Colors.grey),
-                        onPressed: _openCustomGallery,
-                      ),
+                      if (_showPlusIcon)
+                        IconButton(
+                          icon: const Icon(Icons.add, color: Colors.grey),
+                          onPressed: _openCustomGallery,
+                        ),
                       
                       Expanded(
                         child: TextField(
@@ -1306,63 +1279,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 // ---------------------------------------------------------------------------
 // WIDGETS & HELPERS
 // ---------------------------------------------------------------------------
-
-class SlideToast extends StatefulWidget {
-  final String message;
-  final bool isError;
-  const SlideToast({super.key, required this.message, required this.isError});
-
-  @override
-  State<SlideToast> createState() => _SlideToastState();
-}
-
-class _SlideToastState extends State<SlideToast> with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<Offset> _offsetAnimation;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 500),
-      vsync: this,
-    )..forward();
-    _offsetAnimation = Tween<Offset>(
-      begin: const Offset(1.5, 0.0),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutBack));
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SlideTransition(
-      position: _offsetAnimation,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: widget.isError ? const Color(0xFFE53935) : const Color(0xFF323232),
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-             BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 10, offset: const Offset(0, 4))
-          ]
-        ),
-        child: Row(
-          children: [
-            Icon(widget.isError ? Icons.warning_amber_rounded : Icons.check_circle_outline, color: Colors.white),
-            const SizedBox(width: 12),
-            Expanded(child: Text(widget.message, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500))),
-          ],
-        ),
-      ),
-    );
-  }
-}
 
 class ChatBubble extends StatelessWidget {
   final ChatMessage message;
@@ -1587,7 +1503,6 @@ class CodeBlockWidget extends StatelessWidget {
                 GestureDetector(
                   onTap: () {
                      Clipboard.setData(ClipboardData(text: code));
-                     // Simple toast workaround since we are in a widget
                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Copied to clipboard"), duration: Duration(milliseconds: 600)));
                   },
                   child: const Row(
@@ -1673,18 +1588,34 @@ class _CustomGalleryPickerState extends State<CustomGalleryPicker> {
                          File? file = await _images[index].file;
                          if (mounted) Navigator.pop(context, file);
                       },
-                      child: AssetEntityImage(
-                         _images[index],
-                         isOriginal: false, // Thumbnail
-                         thumbnailSize: const ThumbnailSize.square(200),
-                         fit: BoxFit.cover,
-                      ),
+                      child: _MediaThumbnail(asset: _images[index]),
                     );
                   },
                 ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _MediaThumbnail extends StatelessWidget {
+  final AssetEntity asset;
+  const _MediaThumbnail({required this.asset});
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Uint8List?>(
+      future: asset.thumbnailDataWithSize(const ThumbnailSize.square(200)),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.done && snapshot.data != null) {
+          return Image.memory(
+            snapshot.data!,
+            fit: BoxFit.cover,
+          );
+        }
+        return Container(color: Colors.grey[200]);
+      },
     );
   }
 }
