@@ -1,5 +1,15 @@
+name: skygen_ai
+description: SkyGen AI Image Generator
+publish_to: 'none'
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
 dependencies:
   flutter:
     sdk: flutter
   http: ^1.1.0
   path_provider: ^2.1.2
+
+flutter:
+  uses-material-design: true
