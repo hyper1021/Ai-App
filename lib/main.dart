@@ -6,34 +6,33 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:intl/intl.dart'; // For formatting dates
 
 // ---------------------------------------------------------------------------
 // MAIN ENTRY POINT
 // ---------------------------------------------------------------------------
 
 void main() {
-  // Ensure bindings are initialized before calling native code
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Set preferred orientation
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
 
-  // Set system UI overlay style
+  // Status bar style for White Theme (Dark Icons)
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.light,
-    systemNavigationBarColor: Color(0xff121212),
-    systemNavigationBarIconBrightness: Brightness.light,
+    statusBarIconBrightness: Brightness.dark, // Dark icons for white bg
+    systemNavigationBarColor: Colors.white,
+    systemNavigationBarIconBrightness: Brightness.dark,
   ));
 
   runApp(const SkyGenApp());
 }
 
 // ---------------------------------------------------------------------------
-// APP WIDGET
+// APP CONFIGURATION
 // ---------------------------------------------------------------------------
 
 class SkyGenApp extends StatelessWidget {
@@ -44,28 +43,30 @@ class SkyGenApp extends StatelessWidget {
     return MaterialApp(
       title: 'SkyGen AI',
       debugShowCheckedModeBanner: false,
-      themeMode: ThemeMode.dark,
+      themeMode: ThemeMode.light,
       theme: ThemeData(
         useMaterial3: true,
-        brightness: Brightness.dark,
+        brightness: Brightness.light,
+        scaffoldBackgroundColor: const Color(0xFFFFFFFF),
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF00E5FF),
-          brightness: Brightness.dark,
-          background: const Color(0xff121212),
-          surface: const Color(0xff1E1E1E),
+          seedColor: const Color(0xFF007AFF), // Professional Blue
+          brightness: Brightness.light,
+          background: const Color(0xFFFFFFFF),
+          surface: const Color(0xFFF9F9F9),
         ),
-        scaffoldBackgroundColor: const Color(0xff121212),
         appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xff121212),
+          backgroundColor: Colors.white,
           elevation: 0,
-          centerTitle: true,
+          scrolledUnderElevation: 0,
+          iconTheme: IconThemeData(color: Colors.black87),
           titleTextStyle: TextStyle(
             fontSize: 20,
-            fontWeight: FontWeight.bold,
-            letterSpacing: 0.5,
-            color: Colors.white,
+            fontWeight: FontWeight.w600,
+            color: Colors.black87,
+            letterSpacing: -0.5,
           ),
         ),
+        fontFamily: 'Roboto', 
       ),
       home: const ChatScreen(),
     );
@@ -81,7 +82,7 @@ enum GenStatus { waiting, generating, completed, error, stopped }
 
 class ChatMessage {
   final String id;
-  final String text; 
+  final String text;
   final MessageType type;
   String? imageUrl;
   GenStatus status;
@@ -96,27 +97,51 @@ class ChatMessage {
     required this.timestamp,
   });
 
-  Map<String, dynamic> toMap() {
-    return {
-      'id': id,
-      'text': text,
-      'type': type.index,
-      'imageUrl': imageUrl,
-      'status': status.index,
-      'timestamp': timestamp,
-    };
-  }
+  Map<String, dynamic> toMap() => {
+    'id': id,
+    'text': text,
+    'type': type.index,
+    'imageUrl': imageUrl,
+    'status': status.index,
+    'timestamp': timestamp,
+  };
 
-  factory ChatMessage.fromMap(Map<String, dynamic> map) {
-    return ChatMessage(
-      id: map['id'],
-      text: map['text'],
-      type: MessageType.values[map['type']],
-      imageUrl: map['imageUrl'],
-      status: GenStatus.values[map['status']],
-      timestamp: map['timestamp'],
-    );
-  }
+  factory ChatMessage.fromMap(Map<String, dynamic> map) => ChatMessage(
+    id: map['id'],
+    text: map['text'],
+    type: MessageType.values[map['type']],
+    imageUrl: map['imageUrl'],
+    status: GenStatus.values[map['status']],
+    timestamp: map['timestamp'],
+  );
+}
+
+class ChatSession {
+  final String id;
+  String title; // First prompt usually
+  final int createdAt;
+  List<ChatMessage> messages;
+
+  ChatSession({
+    required this.id,
+    required this.title,
+    required this.createdAt,
+    required this.messages,
+  });
+
+  Map<String, dynamic> toMap() => {
+    'id': id,
+    'title': title,
+    'createdAt': createdAt,
+    'messages': messages.map((m) => m.toMap()).toList(),
+  };
+
+  factory ChatSession.fromMap(Map<String, dynamic> map) => ChatSession(
+    id: map['id'],
+    title: map['title'],
+    createdAt: map['createdAt'],
+    messages: (map['messages'] as List).map((e) => ChatMessage.fromMap(e)).toList(),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -133,12 +158,16 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _promptController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
-  final List<ChatMessage> _messages = [];
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  // Logic Variables
+  List<ChatSession> _sessions = [];
+  String _currentSessionId = "";
   
   bool _isGenerating = false;
-  String? _currentGenId; 
+  String? _currentGenId;
   bool _stopRequested = false;
-  File? _historyFile;
+  File? _storageFile;
 
   @override
   void initState() {
@@ -146,51 +175,109 @@ class _ChatScreenState extends State<ChatScreen> {
     _initStorage();
   }
 
+  // --- STORAGE & SESSION MANAGEMENT ---
+
   Future<void> _initStorage() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      _historyFile = File('${dir.path}/chat_history_v2.json');
+      _storageFile = File('${dir.path}/skygen_data_v3.json');
       
-      if (await _historyFile!.exists()) {
-        final content = await _historyFile!.readAsString();
+      if (await _storageFile!.exists()) {
+        final content = await _storageFile!.readAsString();
         final List<dynamic> jsonList = jsonDecode(content);
         setState(() {
-          _messages.addAll(jsonList.map((e) => ChatMessage.fromMap(e)).toList());
+          _sessions = jsonList.map((e) => ChatSession.fromMap(e)).toList();
+          // Sort by newest first
+          _sessions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+        });
+      }
+
+      // If no sessions, create one, else load the most recent
+      if (_sessions.isEmpty) {
+        _createNewSession(isFirstLoad: true);
+      } else {
+        setState(() {
+          _currentSessionId = _sessions.first.id;
         });
         WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
       }
     } catch (e) {
       debugPrint("Error loading history: $e");
+      _createNewSession(isFirstLoad: true);
     }
   }
 
-  Future<void> _saveHistory() async {
-    if (_historyFile == null) return;
+  Future<void> _saveData() async {
+    if (_storageFile == null) return;
     try {
-      final String data = jsonEncode(_messages.map((e) => e.toMap()).toList());
-      await _historyFile!.writeAsString(data);
+      final String data = jsonEncode(_sessions.map((e) => e.toMap()).toList());
+      await _storageFile!.writeAsString(data);
     } catch (e) {
-      debugPrint("Error saving history: $e");
+      debugPrint("Error saving data: $e");
     }
+  }
+
+  void _createNewSession({bool isFirstLoad = false}) {
+    final newId = DateTime.now().millisecondsSinceEpoch.toString();
+    final newSession = ChatSession(
+      id: newId, 
+      title: "New Chat", 
+      createdAt: DateTime.now().millisecondsSinceEpoch, 
+      messages: []
+    );
+
+    setState(() {
+      _sessions.insert(0, newSession); // Add to top
+      _currentSessionId = newId;
+      _isGenerating = false;
+      _promptController.clear();
+    });
+
+    if (!isFirstLoad) {
+      _saveData();
+      // Close drawer if open
+      if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
+        Navigator.pop(context); 
+      }
+    }
+  }
+
+  void _switchSession(String sessionId) {
+    setState(() {
+      _currentSessionId = sessionId;
+      _isGenerating = false; 
+    });
+    Navigator.pop(context); // Close drawer
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  ChatSession get _currentSession {
+    return _sessions.firstWhere((s) => s.id == _currentSessionId, orElse: () => _sessions.first);
   }
 
   void _scrollToBottom() {
     if (_scrollController.hasClients) {
       _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent + 200, 
+        _scrollController.position.maxScrollExtent + 200,
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeOut,
       );
     }
   }
 
-  // -------------------------------------------------------------------------
-  // CORE LOGIC: IMAGE GENERATION
-  // -------------------------------------------------------------------------
+  // --- CORE LOGIC: IMAGE GENERATION ---
 
   Future<void> _handleSubmitted() async {
     final prompt = _promptController.text.trim();
     if (prompt.isEmpty) return;
+
+    // Update Session Title if it's the first message
+    final sessionIndex = _sessions.indexWhere((s) => s.id == _currentSessionId);
+    if (sessionIndex != -1 && _sessions[sessionIndex].messages.isEmpty) {
+      setState(() {
+        _sessions[sessionIndex].title = prompt.length > 20 ? "${prompt.substring(0, 20)}..." : prompt;
+      });
+    }
 
     final userMsg = ChatMessage(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -200,14 +287,14 @@ class _ChatScreenState extends State<ChatScreen> {
     );
 
     setState(() {
-      _messages.add(userMsg);
+      _currentSession.messages.add(userMsg);
       _promptController.clear();
       _isGenerating = true;
       _stopRequested = false;
     });
     
     _scrollToBottom();
-    _saveHistory();
+    _saveData();
 
     final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
     final aiMsg = ChatMessage(
@@ -219,17 +306,19 @@ class _ChatScreenState extends State<ChatScreen> {
     );
 
     setState(() {
-      _messages.add(aiMsg);
+      _currentSession.messages.add(aiMsg);
     });
     _scrollToBottom();
 
     try {
+      // API 1: Request
       final genUrl = Uri.parse("https://gen-z-image.vercel.app/gen");
+      // Use try-catch specifically for network errors
       final response = await http.post(
         genUrl,
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({"q": prompt}),
-      );
+      ).timeout(const Duration(seconds: 20));
 
       if (_stopRequested) throw Exception("Stopped by user");
 
@@ -238,24 +327,30 @@ class _ChatScreenState extends State<ChatScreen> {
         _currentGenId = data["results"]["id"];
         await _pollForImage(aiMsgId, _currentGenId!);
       } else {
-        throw Exception("Server rejected request");
+        throw Exception("Server Error: ${response.statusCode}");
       }
     } catch (e) {
-      _updateMessageStatus(aiMsgId, GenStatus.error, errorText: "Failed: ${e.toString()}");
+      String errorMsg = "Something went wrong.";
+      if (e.toString().contains("SocketException")) {
+        errorMsg = "No Internet Connection. Please check your data/wifi.";
+      } else if (e.toString().contains("Timeout")) {
+        errorMsg = "Request timed out. Server is busy.";
+      }
+      _updateMessageStatus(aiMsgId, GenStatus.error, errorText: errorMsg);
     } finally {
       if (mounted) {
         setState(() {
           _isGenerating = false;
           _currentGenId = null;
         });
-        _saveHistory();
+        _saveData();
       }
     }
   }
 
   Future<void> _pollForImage(String msgId, String generationId) async {
     int attempts = 0;
-    const maxAttempts = 30; // 60 seconds
+    const maxAttempts = 30; // ~60 seconds
     
     while (attempts < maxAttempts) {
       if (_stopRequested) {
@@ -279,41 +374,34 @@ class _ChatScreenState extends State<ChatScreen> {
           }
         }
       } catch (e) {
-        debugPrint("Polling error: $e");
+        debugPrint("Polling flicker: $e");
       }
-
       attempts++;
     }
     
-    _updateMessageStatus(msgId, GenStatus.error, errorText: "Timeout: Generation took too long.");
+    _updateMessageStatus(msgId, GenStatus.error, errorText: "Generation took too long.");
   }
 
-  void _updateMessageStatus(String id, GenStatus status, {String? imageUrl, String? errorText}) {
+  void _updateMessageStatus(String msgId, GenStatus status, {String? imageUrl, String? errorText}) {
     if (!mounted) return;
-    
-    final index = _messages.indexWhere((m) => m.id == id);
-    if (index != -1) {
+    final sIndex = _sessions.indexWhere((s) => s.id == _currentSessionId);
+    if (sIndex == -1) return;
+
+    final mIndex = _sessions[sIndex].messages.indexWhere((m) => m.id == msgId);
+    if (mIndex != -1) {
       setState(() {
-        _messages[index] = ChatMessage(
-          id: _messages[index].id,
-          text: errorText ?? (status == GenStatus.completed ? "Here is your image" : _messages[index].text),
-          type: _messages[index].type,
+        _sessions[sIndex].messages[mIndex] = ChatMessage(
+          id: msgId,
+          text: errorText ?? (status == GenStatus.completed ? "Image generated successfully" : _sessions[sIndex].messages[mIndex].text),
+          type: MessageType.ai,
           imageUrl: imageUrl,
           status: status,
-          timestamp: _messages[index].timestamp,
+          timestamp: DateTime.now().millisecondsSinceEpoch,
         );
       });
-      _saveHistory();
-      if (status == GenStatus.completed) {
-        _scrollToBottom();
-      }
+      _saveData();
+      if (status == GenStatus.completed) _scrollToBottom();
     }
-  }
-
-  void _stopGeneration() {
-    setState(() {
-      _stopRequested = true;
-    });
   }
 
   Future<void> _downloadImage(String url) async {
@@ -330,122 +418,191 @@ class _ChatScreenState extends State<ChatScreen> {
           SnackBar(
             content: Row(
               children: const [
-                Icon(Icons.check_circle, color: Colors.greenAccent),
+                Icon(Icons.check_circle, color: Colors.white),
                 SizedBox(width: 10),
-                Text("Image saved to Documents"),
+                Text("Saved to Documents Folder"),
               ],
             ),
-            backgroundColor: const Color(0xff333333),
+            backgroundColor: Colors.black87,
             behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Download failed: $e")),
+          SnackBar(content: Text("Save failed: $e")),
         );
       }
     }
   }
 
-  // -------------------------------------------------------------------------
-  // UI BUILD
-  // -------------------------------------------------------------------------
+  // --- UI CONSTRUCTION ---
 
   @override
   Widget build(BuildContext context) {
+    // Current messages to display
+    final currentMessages = _sessions.isEmpty 
+        ? <ChatMessage>[] 
+        : _currentSession.messages;
+
     return Scaffold(
-      appBar: AppBar(
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
+      key: _scaffoldKey,
+      backgroundColor: Colors.white,
+      
+      // 1. DRAWER (HISTORY)
+      drawer: Drawer(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.white,
+        child: Column(
           children: [
             Container(
-              padding: const EdgeInsets.all(6),
-              decoration: const BoxDecoration(
-                color: Color(0xFF00E5FF),
-                shape: BoxShape.circle,
+              padding: const EdgeInsets.fromLTRB(20, 50, 20, 20),
+              width: double.infinity,
+              color: Colors.white,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: const [
+                  Text("SkyGen History", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                  SizedBox(height: 5),
+                  Text("Your creative journey", style: TextStyle(color: Colors.grey)),
+                ],
               ),
-              child: const Icon(Icons.auto_awesome, color: Colors.black, size: 16),
             ),
-            const SizedBox(width: 10),
-            const Text("SkyGen AI"),
+            const Divider(height: 1),
+            Expanded(
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                itemCount: _sessions.length,
+                itemBuilder: (context, index) {
+                  final session = _sessions[index];
+                  final bool isActive = session.id == _currentSessionId;
+                  return ListTile(
+                    tileColor: isActive ? Colors.grey[100] : Colors.transparent,
+                    leading: const Icon(Icons.chat_bubble_outline_rounded, color: Colors.black54),
+                    title: Text(
+                      session.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
+                        color: Colors.black87,
+                      ),
+                    ),
+                    onTap: () => _switchSession(session.id),
+                  );
+                },
+              ),
+            ),
           ],
         ),
       ),
+
+      // 2. APP BAR (Redesigned)
+      appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.menu_rounded, size: 28),
+          onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+        ),
+        title: const Text("SkyGen AI"),
+        centerTitle: false,
+        titleSpacing: 0,
+        actions: [
+          IconButton(
+            icon: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.grey[100],
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.add, color: Colors.black87),
+            ),
+            tooltip: "New Chat",
+            onPressed: () => _createNewSession(),
+          ),
+          const SizedBox(width: 16),
+        ],
+      ),
+
+      // 3. BODY
       body: Column(
         children: [
           Expanded(
-            child: _messages.isEmpty
-                ? const EmptyState()
+            child: currentMessages.isEmpty
+                ? const WelcomePlaceholder()
                 : ListView.builder(
                     controller: _scrollController,
-                    padding: const EdgeInsets.only(top: 10, bottom: 20, left: 16, right: 16),
-                    itemCount: _messages.length,
+                    padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+                    itemCount: currentMessages.length,
                     itemBuilder: (context, index) {
-                      return MessageBubble(
-                        message: _messages[index],
+                      return ChatBubble(
+                        message: currentMessages[index],
                         onDownload: _downloadImage,
                       );
                     },
                   ),
           ),
-          SafeArea(
+          
+          // 4. INPUT AREA
+          _buildInputArea(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInputArea() {
+    return Container(
+      padding: EdgeInsets.fromLTRB(16, 12, 16, MediaQuery.of(context).padding.bottom + 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, -5),
+          )
+        ],
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Expanded(
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: BoxDecoration(
-                color: const Color(0xff1E1E1E),
-                border: Border(top: BorderSide(color: Colors.white.withOpacity(0.05))),
+                color: const Color(0xFFF2F4F7), // Light grey input bg
+                borderRadius: BorderRadius.circular(24),
               ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: const Color(0xff2C2C2C),
-                        borderRadius: BorderRadius.circular(24),
-                      ),
-                      child: TextField(
-                        controller: _promptController,
-                        enabled: !_isGenerating,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: InputDecoration(
-                          hintText: _isGenerating ? "Wait for image..." : "Describe an image...",
-                          hintStyle: TextStyle(color: Colors.grey[500]),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                          border: InputBorder.none,
-                          isDense: true,
-                        ),
-                        onSubmitted: (_) => _isGenerating ? null : _handleSubmitted(),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  GestureDetector(
-                    onTap: _isGenerating ? _stopGeneration : _handleSubmitted,
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      height: 48,
-                      width: 48,
-                      decoration: BoxDecoration(
-                        color: _isGenerating ? Colors.redAccent : const Color(0xFF00E5FF),
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: (_isGenerating ? Colors.red : const Color(0xFF00E5FF)).withOpacity(0.3),
-                            blurRadius: 8,
-                            spreadRadius: 2,
-                          )
-                        ],
-                      ),
-                      child: Icon(
-                        _isGenerating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
-                        color: Colors.black,
-                        size: 26,
-                      ),
-                    ),
-                  ),
-                ],
+              child: TextField(
+                controller: _promptController,
+                enabled: !_isGenerating,
+                maxLines: 4,
+                minLines: 1,
+                style: const TextStyle(color: Colors.black87, fontSize: 16),
+                decoration: const InputDecoration(
+                  hintText: "Describe an image...",
+                  hintStyle: TextStyle(color: Colors.grey),
+                  contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                  border: InputBorder.none,
+                ),
+                onSubmitted: (_) => _isGenerating ? null : _handleSubmitted(),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          GestureDetector(
+            onTap: _isGenerating ? () => setState(() => _stopRequested = true) : _handleSubmitted,
+            child: Container(
+              width: 50,
+              height: 50,
+              decoration: BoxDecoration(
+                color: _isGenerating ? Colors.redAccent : Colors.black,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                _isGenerating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+                color: Colors.white,
+                size: 26,
               ),
             ),
           ),
@@ -459,15 +616,11 @@ class _ChatScreenState extends State<ChatScreen> {
 // WIDGETS
 // ---------------------------------------------------------------------------
 
-class MessageBubble extends StatelessWidget {
+class ChatBubble extends StatelessWidget {
   final ChatMessage message;
   final Function(String) onDownload;
 
-  const MessageBubble({
-    super.key,
-    required this.message,
-    required this.onDownload,
-  });
+  const ChatBubble({super.key, required this.message, required this.onDownload});
 
   @override
   Widget build(BuildContext context) {
@@ -475,156 +628,136 @@ class MessageBubble extends StatelessWidget {
     
     return Padding(
       padding: const EdgeInsets.only(bottom: 24),
-      child: Column(
-        crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      child: Row(
+        mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: Text(
-              isUser ? "You" : "SkyGen AI",
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.white.withOpacity(0.6),
-                fontWeight: FontWeight.bold,
-              ),
+          if (!isUser) ...[
+            const CircleAvatar(
+              radius: 14,
+              backgroundColor: Colors.black,
+              child: Icon(Icons.auto_awesome, size: 14, color: Colors.white),
             ),
+            const SizedBox(width: 8),
+          ],
+          Flexible(
+            child: isUser 
+              ? _buildUserMessage() 
+              : _buildAIMessage(context),
           ),
-          const SizedBox(height: 6),
-          isUser
-            ? _buildUserBubble(context)
-            : _buildAIBubble(context),
         ],
       ),
     );
   }
 
-  Widget _buildUserBubble(BuildContext context) {
+  Widget _buildUserMessage() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.8),
-      decoration: const BoxDecoration(
-        color: Color(0xff333333),
-        borderRadius: BorderRadius.only(
-          topLeft: Radius.circular(18),
-          topRight: Radius.circular(4),
-          bottomLeft: Radius.circular(18),
-          bottomRight: Radius.circular(18),
-        ),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF2F2F2), // Light grey for user
+        borderRadius: BorderRadius.circular(20),
       ),
       child: Text(
         message.text,
-        style: const TextStyle(color: Colors.white, fontSize: 16),
+        style: const TextStyle(fontSize: 16, color: Colors.black87, height: 1.4),
       ),
     );
   }
 
-  Widget _buildAIBubble(BuildContext context) {
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.85),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (message.status == GenStatus.completed && message.imageUrl != null)
-            _buildImageCard(context, message.imageUrl!)
-          else if (message.status == GenStatus.generating)
-            _buildLoadingCard()
-          else if (message.status == GenStatus.error || message.status == GenStatus.stopped)
-            _buildErrorCard(),
-        ],
-      ),
+  Widget _buildAIMessage(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (message.status == GenStatus.completed && message.imageUrl != null)
+          _buildImagePreview(context, message.imageUrl!)
+        else if (message.status == GenStatus.generating)
+          _buildGeneratingState()
+        else if (message.status == GenStatus.error || message.status == GenStatus.stopped)
+          _buildErrorState(),
+      ],
     );
   }
 
-  Widget _buildImageCard(BuildContext context, String url) {
+  Widget _buildImagePreview(BuildContext context, String url) {
     return Container(
+      constraints: const BoxConstraints(maxWidth: 300),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withOpacity(0.1)),
-        color: Colors.black,
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10, offset: const Offset(0, 4)),
+        ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          ClipRRect(
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-            child: Image.network(
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Stack(
+          children: [
+            Image.network(
               url,
               fit: BoxFit.cover,
-              loadingBuilder: (context, child, loadingProgress) {
-                if (loadingProgress == null) return child;
+              loadingBuilder: (ctx, child, progress) {
+                if (progress == null) return child;
                 return const SizedBox(
-                  height: 250,
-                  child: Center(child: CircularProgressIndicator()),
-                );
-              },
-              errorBuilder: (context, error, stackTrace) {
-                return const SizedBox(
-                  height: 200, 
-                  child: Center(child: Icon(Icons.broken_image, color: Colors.grey)),
+                  height: 300,
+                  width: 300,
+                  child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
                 );
               },
             ),
-          ),
-          InkWell(
-            onTap: () => onDownload(url),
-            borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              decoration: const BoxDecoration(
-                color: Color(0xff252525),
-                borderRadius: BorderRadius.vertical(bottom: Radius.circular(16)),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: const [
-                  Icon(Icons.download_rounded, size: 20, color: Colors.white),
-                  SizedBox(width: 8),
-                  Text("Download", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500)),
-                ],
+            Positioned(
+              bottom: 10,
+              right: 10,
+              child: GestureDetector(
+                onTap: () => onDownload(url),
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.7),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.download_rounded, color: Colors.white, size: 20),
+                ),
               ),
             ),
-          )
-        ],
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildLoadingCard() {
+  Widget _buildGeneratingState() {
     return Container(
-      height: 250,
-      width: double.infinity,
+      width: 260,
+      height: 260,
       decoration: BoxDecoration(
-        color: const Color(0xff1A1A1A),
+        color: Colors.grey[100],
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withOpacity(0.05)),
+        border: Border.all(color: Colors.grey[200]!),
       ),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: const [
           TypingIndicator(),
           SizedBox(height: 16),
-          Text(
-            "Dreaming up your image...",
-            style: TextStyle(color: Colors.white54, fontSize: 13),
-          ),
+          Text("Creating masterpiece...", style: TextStyle(color: Colors.grey, fontSize: 12)),
         ],
       ),
     );
   }
 
-  Widget _buildErrorCard() {
+  Widget _buildErrorState() {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xff2C1515),
+        color: const Color(0xFFFFF0F0),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.redAccent.withOpacity(0.3)),
+        border: Border.all(color: const Color(0xFFFFCDCD)),
       ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
           const Icon(Icons.error_outline, color: Colors.redAccent, size: 20),
-          const SizedBox(width: 10),
-          Expanded(
+          const SizedBox(width: 8),
+          Flexible(
             child: Text(
               message.text,
               style: const TextStyle(color: Colors.redAccent),
@@ -636,9 +769,38 @@ class MessageBubble extends StatelessWidget {
   }
 }
 
-// ---------------------------------------------------------------------------
-// ANIMATIONS
-// ---------------------------------------------------------------------------
+class WelcomePlaceholder extends StatelessWidget {
+  const WelcomePlaceholder({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Colors.grey[50],
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.auto_awesome_rounded, size: 40, color: Colors.black87),
+          ),
+          const SizedBox(height: 24),
+          const Text(
+            "What can I create for you?",
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            "Start by typing a prompt below",
+            style: TextStyle(color: Colors.grey),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class TypingIndicator extends StatefulWidget {
   const TypingIndicator({super.key});
@@ -653,10 +815,7 @@ class _TypingIndicatorState extends State<TypingIndicator> with SingleTickerProv
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1200),
-    )..repeat();
+    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat();
   }
 
   @override
@@ -668,7 +827,7 @@ class _TypingIndicatorState extends State<TypingIndicator> with SingleTickerProv
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 60,
+      width: 50,
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: List.generate(3, (index) {
@@ -681,64 +840,12 @@ class _TypingIndicatorState extends State<TypingIndicator> with SingleTickerProv
                 child: Container(
                   width: 8,
                   height: 8,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFF00E5FF),
-                    shape: BoxShape.circle,
-                  ),
+                  decoration: const BoxDecoration(color: Colors.black87, shape: BoxShape.circle),
                 ),
               );
             },
           );
         }),
-      ),
-    );
-  }
-}
-
-class EmptyState extends StatelessWidget {
-  const EmptyState({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: const Color(0xff2C2C2C),
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.3),
-                  blurRadius: 15,
-                  spreadRadius: 2,
-                )
-              ],
-            ),
-            child: const Icon(Icons.auto_awesome_mosaic_rounded, size: 48, color: Color(0xFF00E5FF)),
-          ),
-          const SizedBox(height: 20),
-          const Text(
-            "SkyGen AI",
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-            ),
-          ),
-          const SizedBox(height: 10),
-          const Text(
-            "Imagine anything.\nJust type a prompt to start.",
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 16,
-              color: Colors.white54,
-              height: 1.5,
-            ),
-          ),
-        ],
       ),
     );
   }
