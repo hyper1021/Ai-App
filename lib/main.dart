@@ -10,7 +10,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:image_picker/image_picker.dart'; 
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:permission_handler/permission_handler.dart';
-// Fixed Imports
 import 'package:flutter_highlight/flutter_highlight.dart';
 import 'package:flutter_highlight/themes/atom-one-dark.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -90,8 +89,8 @@ enum GenStatus { waiting, generating, streaming, completed, error, stopped }
 
 class ChatMessage {
   final String id;
-  final String text; // The full text (final)
-  String visibleText; // For typing effect
+  final String text; 
+  String visibleText; 
   final MessageType type;
   String? imageUrl; 
   String? attachedImageUrl; 
@@ -182,8 +181,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   // Logic Variables
   List<ChatSession> _sessions = [];
-  List<String> _myStuffImages = []; // Stores URLs of generated images
+  List<String> _myStuffImages = []; 
+  
+  // Handling Temporary New Session
   String _currentSessionId = "";
+  bool _isTempSession = true; 
   
   bool _isGenerating = false;
   String? _currentGenId;
@@ -195,7 +197,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   File? _pickedImage;
   String? _uploadedImgBBUrl;
   bool _isUploadingImage = false;
-  bool _showPlusIcon = true; // Added missing variable
+  bool _showPlusIcon = true;
   
   // Search Drawer
   bool _isSearchExpanded = false;
@@ -218,11 +220,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   void _handleInputListener() {
-    // Hide plus icon if multiline
-    final isMultiline = _promptController.text.contains('\n') || _promptController.text.length > 30;
-    if (_showPlusIcon == isMultiline) {
+    // Logic: Hide plus icon if even 1 char is typed
+    final shouldHide = _promptController.text.isNotEmpty;
+    if (_showPlusIcon == shouldHide) {
        setState(() {
-         _showPlusIcon = !isMultiline;
+         _showPlusIcon = !shouldHide;
        });
     }
     setState(() {}); 
@@ -233,7 +235,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   Future<void> _initStorage() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      _storageFile = File('${dir.path}/skygen_data_v4.json');
+      _storageFile = File('${dir.path}/skygen_data_v5.json'); // Version bump
       
       if (await _storageFile!.exists()) {
         final content = await _storageFile!.readAsString();
@@ -249,23 +251,25 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         });
       }
 
-      if (_sessions.isEmpty) {
-        _createNewSession(isFirstLoad: true);
-      } else {
-        setState(() {
-          _currentSessionId = _sessions.first.id;
-        });
-        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
-      }
+      // Always start with a temp session (Clean Slate)
+      _createTempSession();
+
     } catch (e) {
       debugPrint("Error loading history: $e");
-      _createNewSession(isFirstLoad: true);
+      _createTempSession();
     }
   }
 
   Future<void> _saveData() async {
     if (_storageFile == null) return;
     try {
+      // Filter out temp session if it has no messages or just created
+      final sessionsToSave = _sessions.where((s) => s.id != _currentSessionId || !_isTempSession).toList();
+      // If current is actively being used (has messages), include it
+      if (!_isTempSession && !_sessions.contains(_currentSessionId)) {
+         // handled by reference
+      }
+
       final Map<String, dynamic> data = {
         'sessions': _sessions.map((e) => e.toMap()).toList(),
         'myStuff': _myStuffImages,
@@ -284,35 +288,37 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     });
   }
 
-  void _createNewSession({bool isFirstLoad = false}) {
-    final newId = DateTime.now().millisecondsSinceEpoch.toString();
-    final newSession = ChatSession(
-      id: newId, 
+  // Creates a visual "New Chat" but doesn't add to list until first message
+  void _createTempSession() {
+    final tempId = "temp_${DateTime.now().millisecondsSinceEpoch}";
+    final tempSession = ChatSession(
+      id: tempId, 
       title: "New Chat", 
       createdAt: DateTime.now().millisecondsSinceEpoch, 
       messages: []
     );
 
     setState(() {
-      _sessions.insert(0, newSession);
-      _sortSessions();
-      _currentSessionId = newId;
+      _currentSessionId = tempId;
+      _isTempSession = true;
       _isGenerating = false;
       _promptController.clear();
-      _clearAttachment(); 
+      _clearAttachment();
     });
+  }
 
-    if (!isFirstLoad) {
-      _saveData();
-      if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
-        Navigator.pop(context); 
-      }
-    }
+  // Explicitly creating a new chat from button
+  void _startNewChatAction() {
+    if (_isTempSession && _currentSession.messages.isEmpty) return; // Already in empty new chat
+    _createTempSession();
+    if (_scaffoldKey.currentState?.isDrawerOpen ?? false) Navigator.pop(context);
   }
 
   void _switchSession(String sessionId) {
+    // If leaving a temp empty session, discard it essentially (it's not in list anyway)
     setState(() {
       _currentSessionId = sessionId;
+      _isTempSession = false; // Loading existing
       _isGenerating = false; 
       _clearAttachment();
     });
@@ -323,13 +329,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   // --- HISTORY MANAGEMENT ---
 
   void _pinSession(String id) {
-    setState(() {
-      final s = _sessions.firstWhere((s) => s.id == id);
-      s.isPinned = !s.isPinned;
-      _sortSessions();
-    });
-    _saveData();
-    Navigator.pop(context); // Close bottom sheet
+    final index = _sessions.indexWhere((s) => s.id == id);
+    if (index != -1) {
+      setState(() {
+        _sessions[index].isPinned = !_sessions[index].isPinned;
+        _sortSessions();
+      });
+      _saveData();
+    }
+    Navigator.pop(context); 
   }
 
   void _deleteSession(String id) {
@@ -341,12 +349,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         TextButton(onPressed: () {
           setState(() {
             _sessions.removeWhere((s) => s.id == id);
-            if (_sessions.isEmpty) _createNewSession();
-            else if (_currentSessionId == id) _currentSessionId = _sessions.first.id;
+            if (_currentSessionId == id) _createTempSession();
           });
           _saveData();
-          Navigator.pop(ctx); // Close dialog
-          Navigator.pop(context); // Close bottom sheet
+          Navigator.pop(ctx); 
+          Navigator.pop(context); 
         }, child: const Text("Delete", style: TextStyle(color: Colors.red))),
       ],
     ));
@@ -371,6 +378,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   ChatSession get _currentSession {
+    if (_isTempSession) {
+      // Return a temporary object if not in list yet
+      return _sessions.firstWhere((s) => s.id == _currentSessionId, 
+        orElse: () => ChatSession(id: _currentSessionId, title: "New Chat", createdAt: DateTime.now().millisecondsSinceEpoch, messages: [])
+      );
+    }
     return _sessions.firstWhere((s) => s.id == _currentSessionId, orElse: () => _sessions.first);
   }
 
@@ -400,6 +413,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // Drag Handle
+              Center(
+                child: Container(
+                  width: 40, height: 4,
+                  margin: const EdgeInsets.only(bottom: 20),
+                  decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+                ),
+              ),
               _buildModelTile("SkyGen", "Advanced Text AI Chat", Icons.chat_bubble_outline),
               const SizedBox(height: 10),
               _buildModelTile("Sky-Img", "AI Image Generation", Icons.image_outlined),
@@ -450,26 +471,21 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   // --- CUSTOM IMAGE PICKER ---
 
   Future<void> _openCustomGallery() async {
-    if (Platform.isAndroid) {
-       await Permission.storage.request();
-       await Permission.photos.request();
-    }
-    
-    // Check permission
-    final PermissionStatus ps = await Permission.photos.status;
-    final PermissionStatus ss = await Permission.storage.status;
-    
-    // Simple permission logic for stability
-    if (ps.isDenied && ss.isDenied) {
-        await Permission.photos.request();
-        await Permission.storage.request();
+    // Permission Handling
+    final PermissionState ps = await PhotoManager.requestPermissionExtend();
+    if (!ps.isAuth && !ps.hasAccess) {
+        _showToast("Gallery permission denied", isError: true);
+        await openAppSettings();
+        return;
     }
 
     if (!mounted) return;
 
+    // Show Full Height Bottom Sheet
     showModalBottomSheet(
       context: context,
-      isScrollControlled: true,
+      isScrollControlled: true, // Full screen
+      useSafeArea: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => const CustomGalleryPicker(),
@@ -507,7 +523,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           _uploadedImgBBUrl = data['data']['url'];
           _isUploadingImage = false;
         });
-        _showToast("Image attached", isError: false);
+        // _showToast("Image attached", isError: false); // Optional feedback
       } else {
         throw Exception("ImgBB Upload Failed");
       }
@@ -552,14 +568,23 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     if (!(await _checkInternet())) {
       // Offline handling
       setState(() {
-         _currentSession.messages.add(ChatMessage(
+         // Create a temporary message list if in temp session
+         if (_isTempSession) {
+             final newSess = ChatSession(id: _currentSessionId, title: "Offline", createdAt: DateTime.now().millisecondsSinceEpoch, messages: []);
+             _sessions.insert(0, newSess);
+             _isTempSession = false;
+         }
+         
+         final sess = _sessions.firstWhere((s) => s.id == _currentSessionId);
+         
+         sess.messages.add(ChatMessage(
            id: DateTime.now().millisecondsSinceEpoch.toString(),
            text: prompt,
            type: MessageType.user,
            attachedImageUrl: _uploadedImgBBUrl,
            timestamp: DateTime.now().millisecondsSinceEpoch,
          ));
-         _currentSession.messages.add(ChatMessage(
+         sess.messages.add(ChatMessage(
            id: "offline_${DateTime.now().millisecondsSinceEpoch}",
            text: "Internet connection unavailable. Please turn on internet and try again.",
            type: MessageType.ai,
@@ -573,11 +598,19 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       return;
     }
 
-    // Set Title if new
-    final sessionIndex = _sessions.indexWhere((s) => s.id == _currentSessionId);
-    if (sessionIndex != -1 && _sessions[sessionIndex].messages.isEmpty) {
+    // --- CONVERT TEMP SESSION TO REAL SESSION ---
+    if (_isTempSession) {
+      final newTitle = prompt.length > 25 ? "${prompt.substring(0, 25)}..." : prompt;
+      final newSession = ChatSession(
+        id: _currentSessionId, 
+        title: newTitle, 
+        createdAt: DateTime.now().millisecondsSinceEpoch, 
+        messages: []
+      );
       setState(() {
-        _sessions[sessionIndex].title = prompt.length > 25 ? "${prompt.substring(0, 25)}..." : prompt;
+        _sessions.insert(0, newSession);
+        _isTempSession = false;
+        _sortSessions();
       });
     }
 
@@ -589,8 +622,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       timestamp: DateTime.now().millisecondsSinceEpoch,
     );
 
+    final currentSess = _sessions.firstWhere((s) => s.id == _currentSessionId);
+
     setState(() {
-      _currentSession.messages.add(userMsg);
+      currentSess.messages.add(userMsg);
       _promptController.clear();
       _isGenerating = true;
       _stopRequested = false;
@@ -626,24 +661,22 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     if (!mounted) return;
     
     // Set status to streaming
-    _updateMessageStatus(msgId, GenStatus.streaming, errorText: fullText); // Store full text
+    _updateMessageStatus(msgId, GenStatus.streaming, errorText: fullText); 
 
     int currentIndex = 0;
-    const chunkSize = 5; // Chars per tick
+    const chunkSize = 5; 
     
-    // Initial partial
     while (currentIndex < fullText.length) {
       if (_stopRequested) {
         _updateMessageStatus(msgId, GenStatus.stopped);
         return;
       }
       
-      await Future.delayed(const Duration(milliseconds: 20)); // Typing speed
+      await Future.delayed(const Duration(milliseconds: 20)); 
       
       currentIndex = min(currentIndex + chunkSize, fullText.length);
       final currentVisible = fullText.substring(0, currentIndex);
       
-      // Update specific message
       final sIndex = _sessions.indexWhere((s) => s.id == _currentSessionId);
       if (sIndex == -1) break;
       final mIndex = _sessions[sIndex].messages.indexWhere((m) => m.id == msgId);
@@ -668,15 +701,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       text: "",
       visibleText: "",
       type: MessageType.ai,
-      status: GenStatus.waiting, // Show loading circle initially
+      status: GenStatus.waiting, 
       timestamp: DateTime.now().millisecondsSinceEpoch,
     );
 
-    setState(() => _currentSession.messages.add(aiMsg));
+    final currentSess = _sessions.firstWhere((s) => s.id == _currentSessionId);
+    setState(() => currentSess.messages.add(aiMsg));
     _scrollToBottom();
 
     try {
-      // FIX: Typed as Map<String, dynamic>
       final Map<String, dynamic> body = {"q": prompt};
       if (extraBody != null) body.addAll(extraBody);
 
@@ -704,7 +737,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _processSkyCoder(String prompt) async {
-    // 5 Minute timeout handling
     final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
     final aiMsg = ChatMessage(
       id: aiMsgId,
@@ -714,7 +746,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       timestamp: DateTime.now().millisecondsSinceEpoch,
     );
 
-    setState(() => _currentSession.messages.add(aiMsg));
+    final currentSess = _sessions.firstWhere((s) => s.id == _currentSessionId);
+    setState(() => currentSess.messages.add(aiMsg));
     _scrollToBottom();
 
     try {
@@ -741,7 +774,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   Future<void> _processDescriberFlow(String prompt, String imgUrl) async {
     final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
-    setState(() => _currentSession.messages.add(ChatMessage(
+    final currentSess = _sessions.firstWhere((s) => s.id == _currentSessionId);
+    setState(() => currentSess.messages.add(ChatMessage(
       id: aiMsgId,
       text: "Analyzing image...",
       type: MessageType.ai,
@@ -751,14 +785,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _scrollToBottom();
 
     try {
-      // 1. Get Description
       final descRes = await http.get(Uri.parse("https://gen-z-describer.vercel.app/api?url=$imgUrl"));
       if (descRes.statusCode != 200) throw Exception("Describer failed");
       
       final descData = jsonDecode(descRes.body);
       final description = descData["results"]["description"];
 
-      // 2. Send to SkyGen
       final skyGenBody = {
         "q": prompt,
         "image": {
@@ -791,7 +823,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   Future<void> _processImageGeneration(String prompt, String? attachmentUrl) async {
     final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
-    setState(() => _currentSession.messages.add(ChatMessage(
+    final currentSess = _sessions.firstWhere((s) => s.id == _currentSessionId);
+    setState(() => currentSess.messages.add(ChatMessage(
       id: aiMsgId,
       text: "Generating image...",
       type: MessageType.ai,
@@ -854,12 +887,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           final List<dynamic> urls = data["results"]["urls"] ?? [];
           if (urls.isNotEmpty) {
             String finalUrl = urls.first;
-            // Add to My Stuff
             setState(() {
               _myStuffImages.insert(0, finalUrl);
             });
             _updateMessageStatus(msgId, GenStatus.completed, imageUrl: finalUrl);
-            _showToast("Image Generated!", isError: false);
+            _showToast("Image Generated", isError: false);
             return;
           }
         }
@@ -871,7 +903,18 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   void _updateMessageStatus(String msgId, GenStatus status, {String? imageUrl, String? errorText}) {
     if (!mounted) return;
-    final sIndex = _sessions.indexWhere((s) => s.id == _currentSessionId);
+    
+    // Find session even if temp
+    int sIndex;
+    if (_isTempSession) {
+      // Just check current ID
+      sIndex = _currentSessionId.isNotEmpty ? 0 : -1; // Dummy check, logic handled below
+      // Actually we need to access _currentSession (which is virtual if temp)
+      // But _streamResponse uses logic that assumes it is in _sessions list.
+      // Since we added to list in _handleSubmitted, we can search _sessions.
+    }
+    
+    sIndex = _sessions.indexWhere((s) => s.id == _currentSessionId);
     if (sIndex == -1) return;
 
     final mIndex = _sessions[sIndex].messages.indexWhere((m) => m.id == msgId);
@@ -895,7 +938,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   // --- DOWNLOAD & TOAST ---
 
   void _showToast(String message, {bool isError = false}) {
-    // For safer implementation, using SnackBar instead of Overlay to prevent build context errors
+    // Bottom SnackBar with custom style
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Row(
@@ -908,11 +951,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       backgroundColor: isError ? Colors.redAccent : const Color(0xFF333333),
       behavior: SnackBarBehavior.floating,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      margin: EdgeInsets.only(bottom: MediaQuery.of(context).size.height - 100, left: 10, right: 10),
+      // Margin to show at bottom properly
+      margin: const EdgeInsets.all(16), 
     ));
   }
   
   Future<void> _downloadImage(String url) async {
+    // Basic permissions logic for simple save
     if (Platform.isAndroid) await Permission.storage.request();
 
     try {
@@ -933,17 +978,40 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       final response = await http.get(Uri.parse(url));
       await file.writeAsBytes(response.bodyBytes);
 
-      _showToast("Saved to ${file.path}");
+      _showToast("Download Successful");
     } catch (e) {
       _showToast("Save failed", isError: true);
     }
+  }
+
+  // --- NAVIGATION ---
+  
+  // Helper to find session of an image for "Go to Chat"
+  void _goToChatFromImage(String imageUrl) {
+    for (var session in _sessions) {
+      for (var msg in session.messages) {
+        if (msg.imageUrl == imageUrl) {
+          // Switch to this session
+          setState(() {
+            _currentSessionId = session.id;
+            _isTempSession = false;
+            _isGenerating = false;
+            _clearAttachment();
+          });
+          Navigator.pop(context); // Close My Stuff Page if open
+          WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+          return;
+        }
+      }
+    }
+    _showToast("Chat not found", isError: true);
   }
 
   // --- UI CONSTRUCTION ---
 
   @override
   Widget build(BuildContext context) {
-    final currentMessages = _sessions.isEmpty ? <ChatMessage>[] : _currentSession.messages;
+    final currentMessages = _currentSession.messages;
 
     return Scaffold(
       key: _scaffoldKey,
@@ -960,7 +1028,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           onTap: _openModelSelector,
           child: Row(
             children: [
-              Text(_selectedModel), // No extra text
+              Text(_selectedModel), 
               const SizedBox(width: 4),
               const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.black54, size: 20),
             ],
@@ -974,7 +1042,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               decoration: BoxDecoration(color: Colors.grey[100], shape: BoxShape.circle),
               child: const Icon(Icons.add, color: Colors.black87),
             ),
-            onPressed: () => _createNewSession(),
+            onPressed: _startNewChatAction,
           ),
           const SizedBox(width: 16),
         ],
@@ -993,6 +1061,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                       return ChatBubble(
                         message: currentMessages[index],
                         onDownload: _downloadImage,
+                        onImageClick: (url) => Navigator.push(context, MaterialPageRoute(
+                          builder: (_) => FullScreenImageViewer(
+                            imageUrl: url, 
+                            onDownload: _downloadImage,
+                            onGoToChat: _goToChatFromImage,
+                          )
+                        )),
+                        modelName: _selectedModel,
                       );
                     },
                   ),
@@ -1003,8 +1079,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
-  // --- NEW DRAWER DESIGN ---
-
+  // --- DRAWER ---
   Widget _buildDrawer() {
     return Drawer(
       backgroundColor: Colors.white,
@@ -1059,7 +1134,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   if (!_isSearchExpanded) ...[
                     const SizedBox(width: 10),
                     IconButton(
-                      onPressed: () => _createNewSession(),
+                      onPressed: _startNewChatAction,
                       icon: Container(
                         padding: const EdgeInsets.all(8),
                         decoration: const BoxDecoration(color: Colors.black, shape: BoxShape.circle),
@@ -1078,7 +1153,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                 child: GestureDetector(
                   onTap: () {
                     Navigator.pop(context);
-                    Navigator.push(context, MaterialPageRoute(builder: (_) => MyStuffPage(images: _myStuffImages)));
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => MyStuffPage(
+                      images: _myStuffImages, 
+                      onGoToChat: _goToChatFromImage,
+                      onDownload: _downloadImage
+                    )));
                   },
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1097,12 +1176,21 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   itemCount: min(_myStuffImages.length, 3),
                   separatorBuilder: (_,__) => const SizedBox(width: 10),
                   itemBuilder: (ctx, i) {
-                    return ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: CachedNetworkImage(
-                        imageUrl: _myStuffImages[i],
-                        width: 80, height: 80, fit: BoxFit.cover,
-                        placeholder: (context, url) => Container(color: Colors.grey[200]),
+                    return GestureDetector(
+                      onTap: () => Navigator.push(context, MaterialPageRoute(
+                          builder: (_) => FullScreenImageViewer(
+                            imageUrl: _myStuffImages[i], 
+                            onDownload: _downloadImage,
+                            onGoToChat: _goToChatFromImage,
+                          )
+                        )),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: CachedNetworkImage(
+                          imageUrl: _myStuffImages[i],
+                          width: 80, height: 80, fit: BoxFit.cover,
+                          placeholder: (context, url) => Container(color: Colors.grey[200]),
+                        ),
                       ),
                     );
                   },
@@ -1118,11 +1206,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                 itemCount: _sessions.length,
                 itemBuilder: (context, index) {
                   final session = _sessions[index];
+                  // Hide sessions with no messages (should usually be cleaned up, but safety check)
+                  if (session.messages.isEmpty) return const SizedBox.shrink();
+
                   if (_searchQuery.isNotEmpty && !session.title.toLowerCase().contains(_searchQuery)) {
                     return const SizedBox.shrink();
                   }
 
-                  final isActive = session.id == _currentSessionId;
+                  final isActive = session.id == _currentSessionId && !_isTempSession;
                   return ListTile(
                     tileColor: isActive ? Colors.grey[100] : Colors.transparent,
                     leading: Icon(
@@ -1169,7 +1260,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
-  // --- INPUT AREA WITH PREVIEW ---
+  // --- INPUT AREA (UPDATED DESIGN) ---
 
   Widget _buildInputArea() {
     return Container(
@@ -1210,65 +1301,70 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               ),
             ),
           
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Expanded(
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF2F4F7),
-                    borderRadius: BorderRadius.circular(24),
+          // Capsule Input
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF2F4F7),
+              borderRadius: BorderRadius.circular(30),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                // 1. ATTACH BUTTON (Inside)
+                if (_showPlusIcon)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 4, left: 4),
+                    decoration: const BoxDecoration(
+                       color: Colors.black, // Black BG
+                       shape: BoxShape.circle
+                    ),
+                    child: IconButton(
+                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                      icon: const Icon(Icons.add, color: Colors.white, size: 20),
+                      onPressed: _openCustomGallery,
+                      padding: EdgeInsets.zero,
+                    ),
                   ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      // CUSTOM PICKER
-                      if (_showPlusIcon)
-                        IconButton(
-                          icon: const Icon(Icons.add, color: Colors.grey),
-                          onPressed: _openCustomGallery,
-                        ),
-                      
-                      Expanded(
-                        child: TextField(
-                          controller: _promptController,
-                          enabled: !_isGenerating,
-                          maxLines: 4,
-                          minLines: 1,
-                          style: const TextStyle(color: Colors.black87, fontSize: 16),
-                          decoration: const InputDecoration(
-                            hintText: "Message...",
-                            hintStyle: TextStyle(color: Colors.grey),
-                            contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 14),
-                            border: InputBorder.none,
-                          ),
-                          onSubmitted: (_) => _isGenerating ? null : _handleSubmitted(),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              GestureDetector(
-                onTap: _isGenerating ? () => setState(() => _stopRequested = true) : _handleSubmitted,
-                child: Container(
-                  width: 50,
-                  height: 50,
-                  decoration: BoxDecoration(
-                    color: (_promptController.text.isEmpty && _pickedImage == null) && !_isGenerating 
-                        ? Colors.grey 
-                        : (_isGenerating ? Colors.redAccent : Colors.black),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    _isGenerating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
-                    color: Colors.white,
-                    size: 26,
+
+                // 2. TEXT FIELD
+                Expanded(
+                  child: TextField(
+                    controller: _promptController,
+                    enabled: !_isGenerating,
+                    maxLines: 4,
+                    minLines: 1,
+                    style: const TextStyle(color: Colors.black87, fontSize: 16),
+                    decoration: const InputDecoration(
+                      hintText: "Message...",
+                      hintStyle: TextStyle(color: Colors.grey),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      border: InputBorder.none,
+                    ),
+                    onSubmitted: (_) => _isGenerating ? null : _handleSubmitted(),
                   ),
                 ),
-              ),
-            ],
+
+                // 3. SEND/STOP BUTTON (Inside)
+                Container(
+                   margin: const EdgeInsets.only(bottom: 4, right: 4),
+                   decoration: BoxDecoration(
+                     color: Colors.black, // Black BG for both states
+                     shape: BoxShape.circle
+                   ),
+                   child: IconButton(
+                     constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                     icon: Icon(
+                       _isGenerating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+                       color: Colors.white,
+                       size: 20,
+                     ),
+                     onPressed: _isGenerating ? () => setState(() => _stopRequested = true) : _handleSubmitted,
+                     padding: EdgeInsets.zero,
+                   ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -1283,8 +1379,16 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 class ChatBubble extends StatelessWidget {
   final ChatMessage message;
   final Function(String) onDownload;
+  final Function(String) onImageClick;
+  final String modelName;
 
-  const ChatBubble({super.key, required this.message, required this.onDownload});
+  const ChatBubble({
+    super.key, 
+    required this.message, 
+    required this.onDownload,
+    required this.onImageClick,
+    required this.modelName
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1296,6 +1400,7 @@ class ChatBubble extends StatelessWidget {
         mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // AI Icon (User doesn't have icon in this design)
           if (!isUser) ...[
              const CircleAvatar(
               radius: 14,
@@ -1304,6 +1409,8 @@ class ChatBubble extends StatelessWidget {
             ),
             const SizedBox(width: 10),
           ],
+
+          // Content
           Flexible(
             child: isUser 
               ? _buildUserMessage() 
@@ -1328,12 +1435,15 @@ class ChatBubble extends StatelessWidget {
           if (message.attachedImageUrl != null)
             Padding(
                padding: const EdgeInsets.only(bottom: 8),
-               child: ClipRRect(
-                 borderRadius: BorderRadius.circular(10),
-                 child: CachedNetworkImage(
-                   imageUrl: message.attachedImageUrl!, 
-                   width: 200, fit: BoxFit.cover,
-                   placeholder: (c,u) => const CircularProgressIndicator(),
+               child: GestureDetector(
+                 onTap: () => onImageClick(message.attachedImageUrl!),
+                 child: ClipRRect(
+                   borderRadius: BorderRadius.circular(10),
+                   child: CachedNetworkImage(
+                     imageUrl: message.attachedImageUrl!, 
+                     width: 200, fit: BoxFit.cover,
+                     placeholder: (c,u) => const CircularProgressIndicator(),
+                   ),
                  ),
                ),
             ),
@@ -1347,16 +1457,51 @@ class ChatBubble extends StatelessWidget {
   }
 
   Widget _buildAIMessage(BuildContext context) {
+    // Determine loading text based on model (approximated, since message doesn't store model, 
+    // but we can infer from "Waiting" status or just generic)
+    // Actually, user requested dynamic text. We'll use the status text stored in message.text if waiting.
+    
+    bool isWaiting = message.status == GenStatus.waiting || message.status == GenStatus.generating;
+    String statusText = "";
+    if (isWaiting) {
+      if (message.text.contains("Generating image")) statusText = "Generating Image...";
+      else if (message.text.contains("Analyzing")) statusText = "Analyzing Image...";
+      else statusText = "Thinking...";
+      
+      // Override for specific models based on last used logic or simple text check
+      // Ideally model should be stored in Message, but we improvise
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // 1. HEADER (Status / Dots) - Inline with Avatar (Avatar is in parent row)
+        // Since parent is Row [Avatar, Column], this Column is to the right of Avatar.
+        // We need status text here if waiting.
+        if (isWaiting)
+          Container(
+             height: 28, // Height to align with avatar
+             alignment: Alignment.centerLeft,
+             child: Row(
+               children: [
+                 Text(statusText, style: const TextStyle(color: Colors.grey, fontStyle: FontStyle.italic)),
+                 const SizedBox(width: 8),
+                 const TypingIndicator(),
+               ],
+             ),
+          ),
+        
+        // 2. CONTENT (Text / Image / Error) - Starts on NEXT LINE
+        
+        // Image Result
         if (message.imageUrl != null)
           _buildImagePreview(context, message.imageUrl!),
           
-        if (message.visibleText.isNotEmpty)
+        // Text Result (Visible Text)
+        if (message.visibleText.isNotEmpty && message.imageUrl == null)
            Container(
              constraints: const BoxConstraints(maxWidth: 320),
-             margin: const EdgeInsets.only(top: 4), // Below avatar
+             margin: const EdgeInsets.only(top: 4), 
              child: MarkdownBody(
                data: message.visibleText,
                selectable: true,
@@ -1374,12 +1519,7 @@ class ChatBubble extends StatelessWidget {
              ),
            ),
            
-        if (message.status == GenStatus.waiting || message.status == GenStatus.generating)
-          const Padding(
-            padding: EdgeInsets.only(top: 8),
-            child: TypingIndicator(),
-          ),
-          
+        // Error
         if (message.status == GenStatus.error)
           _buildErrorState(),
       ],
@@ -1389,43 +1529,47 @@ class ChatBubble extends StatelessWidget {
   Widget _buildImagePreview(BuildContext context, String url) {
     return Container(
       constraints: const BoxConstraints(maxWidth: 300),
-      margin: const EdgeInsets.only(bottom: 10),
+      margin: const EdgeInsets.only(top: 8, bottom: 10),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10, offset: const Offset(0, 4)),
         ],
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(16),
-        child: Stack(
-          children: [
-            CachedNetworkImage(
-              imageUrl: url,
-              fit: BoxFit.cover,
-              placeholder: (ctx, url) => const SizedBox(
-                height: 300, width: 300,
-                child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-              ),
-              errorWidget: (context, url, error) => const SizedBox(height: 300, width: 300, child: Icon(Icons.error)),
-            ),
-            Positioned(
-              bottom: 10,
-              right: 10,
-              child: GestureDetector(
-                onTap: () => onDownload(url),
-                child: Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.7),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(Icons.download_rounded, color: Colors.white, size: 20),
+      child: Stack(
+        children: [
+          GestureDetector(
+            onTap: () => onImageClick(url),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: CachedNetworkImage(
+                imageUrl: url,
+                fit: BoxFit.cover,
+                placeholder: (ctx, url) => const SizedBox(
+                  height: 300, width: 300,
+                  child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
                 ),
+                errorWidget: (context, url, error) => const SizedBox(height: 300, width: 300, child: Icon(Icons.error)),
               ),
             ),
-          ],
-        ),
+          ),
+          // Download Button Top Right
+          Positioned(
+            top: 10,
+            right: 10,
+            child: GestureDetector(
+              onTap: () => onDownload(url),
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.7),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.download_rounded, color: Colors.white, size: 20),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1451,6 +1595,76 @@ class ChatBubble extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// FULL SCREEN IMAGE VIEWER
+// ---------------------------------------------------------------------------
+
+class FullScreenImageViewer extends StatelessWidget {
+  final String imageUrl;
+  final Function(String) onDownload;
+  final Function(String) onGoToChat;
+
+  const FullScreenImageViewer({
+    super.key, 
+    required this.imageUrl, 
+    required this.onDownload,
+    required this.onGoToChat
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          // Zoomable Image
+          Center(
+            child: InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 4.0,
+              child: CachedNetworkImage(
+                imageUrl: imageUrl,
+                fit: BoxFit.contain,
+                placeholder: (c,u) => const CircularProgressIndicator(color: Colors.white),
+              ),
+            ),
+          ),
+          
+          // Top Buttons (Close, Download, Chat)
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 10,
+            right: 20,
+            child: Row(
+              children: [
+                _buildCircleButton(Icons.chat_bubble_outline, () => onGoToChat(imageUrl)),
+                const SizedBox(width: 15),
+                _buildCircleButton(Icons.download_rounded, () => onDownload(imageUrl)),
+                const SizedBox(width: 15),
+                _buildCircleButton(Icons.close, () => Navigator.pop(context)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCircleButton(IconData icon, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.5),
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white24)
+        ),
+        child: Icon(icon, color: Colors.white, size: 24),
       ),
     );
   }
@@ -1555,7 +1769,7 @@ class _CustomGalleryPickerState extends State<CustomGalleryPicker> {
   Future<void> _fetchImages() async {
     final albums = await PhotoManager.getAssetPathList(type: RequestType.image, onlyAll: true);
     if (albums.isNotEmpty) {
-      final recent = await albums.first.getAssetListRange(start: 0, end: 60); // Get top 60
+      final recent = await albums.first.getAssetListRange(start: 0, end: 100); 
       setState(() {
         _images = recent;
       });
@@ -1564,37 +1778,50 @@ class _CustomGalleryPickerState extends State<CustomGalleryPicker> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.7,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text("Gallery", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 16),
-          Expanded(
-            child: _images.isEmpty 
-              ? const Center(child: CircularProgressIndicator())
-              : GridView.builder(
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    crossAxisSpacing: 4,
-                    mainAxisSpacing: 4,
-                  ),
-                  itemCount: _images.length,
-                  itemBuilder: (_, index) {
-                    return GestureDetector(
-                      onTap: () async {
-                         File? file = await _images[index].file;
-                         if (mounted) Navigator.pop(context, file);
-                      },
-                      child: _MediaThumbnail(asset: _images[index]),
-                    );
-                  },
-                ),
+    return Column(
+      children: [
+        // Top Header with Drag Handle & Close
+        Container(
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const SizedBox(width: 24), // Balance
+              Container(
+                width: 40, height: 4,
+                decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+              ),
+              GestureDetector(
+                onTap: () => Navigator.pop(context),
+                child: const Icon(Icons.close, color: Colors.black54),
+              ),
+            ],
           ),
-        ],
-      ),
+        ),
+        // Grid
+        Expanded(
+          child: _images.isEmpty 
+            ? const Center(child: CircularProgressIndicator())
+            : GridView.builder(
+                padding: const EdgeInsets.all(2),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 3,
+                  crossAxisSpacing: 2,
+                  mainAxisSpacing: 2,
+                ),
+                itemCount: _images.length,
+                itemBuilder: (_, index) {
+                  return GestureDetector(
+                    onTap: () async {
+                       File? file = await _images[index].file;
+                       if (mounted) Navigator.pop(context, file);
+                    },
+                    child: _MediaThumbnail(asset: _images[index]),
+                  );
+                },
+              ),
+        ),
+      ],
     );
   }
 }
@@ -1626,7 +1853,15 @@ class _MediaThumbnail extends StatelessWidget {
 
 class MyStuffPage extends StatelessWidget {
   final List<String> images;
-  const MyStuffPage({super.key, required this.images});
+  final Function(String) onGoToChat;
+  final Function(String) onDownload;
+
+  const MyStuffPage({
+    super.key, 
+    required this.images,
+    required this.onGoToChat,
+    required this.onDownload
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1643,7 +1878,13 @@ class MyStuffPage extends StatelessWidget {
         itemBuilder: (ctx, i) {
           return GestureDetector(
              onTap: () {
-                // Open full view logic if needed, or re-use bubble preview
+                Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => FullScreenImageViewer(
+                    imageUrl: images[i], 
+                    onDownload: onDownload,
+                    onGoToChat: onGoToChat,
+                  )
+                ));
              },
              child: ClipRRect(
                borderRadius: BorderRadius.circular(4),
