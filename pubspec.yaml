@@ -1,4 +1,4 @@
-name: SkyGen
+name: ai_image_app
 description: SkyGen AI Image Generator
 publish_to: 'none'
 
@@ -10,7 +10,7 @@ dependencies:
     sdk: flutter
   http: ^1.1.0
   path_provider: ^2.1.2
-  shared_preferences: ^2.2.0
+  shared_preferences: ^2.2.2
   intl: ^0.19.0
 
 flutter:
