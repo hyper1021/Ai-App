@@ -6,7 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-// import 'package:intl/intl.dart'; // এই লাইনটা ডিলিট করা হয়েছে কারণ এটার দরকার নেই
+import 'package:image_picker/image_picker.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 // ---------------------------------------------------------------------------
 // MAIN ENTRY POINT
@@ -20,10 +22,9 @@ void main() {
     DeviceOrientation.portraitDown,
   ]);
 
-  // Status bar style for White Theme (Dark Icons)
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.dark, // Dark icons for white bg
+    statusBarIconBrightness: Brightness.dark,
     systemNavigationBarColor: Colors.white,
     systemNavigationBarIconBrightness: Brightness.dark,
   ));
@@ -49,7 +50,7 @@ class SkyGenApp extends StatelessWidget {
         brightness: Brightness.light,
         scaffoldBackgroundColor: const Color(0xFFFFFFFF),
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF007AFF), // Professional Blue
+          seedColor: const Color(0xFF007AFF),
           brightness: Brightness.light,
           background: const Color(0xFFFFFFFF),
           surface: const Color(0xFFF9F9F9),
@@ -84,7 +85,8 @@ class ChatMessage {
   final String id;
   final String text;
   final MessageType type;
-  String? imageUrl;
+  String? imageUrl; // Result image from AI
+  String? attachedImageUrl; // User uploaded image
   GenStatus status;
   final int timestamp;
 
@@ -93,6 +95,7 @@ class ChatMessage {
     required this.text,
     required this.type,
     this.imageUrl,
+    this.attachedImageUrl,
     this.status = GenStatus.completed,
     required this.timestamp,
   });
@@ -102,6 +105,7 @@ class ChatMessage {
     'text': text,
     'type': type.index,
     'imageUrl': imageUrl,
+    'attachedImageUrl': attachedImageUrl,
     'status': status.index,
     'timestamp': timestamp,
   };
@@ -111,6 +115,7 @@ class ChatMessage {
     text: map['text'],
     type: MessageType.values[map['type']],
     imageUrl: map['imageUrl'],
+    attachedImageUrl: map['attachedImageUrl'],
     status: GenStatus.values[map['status']],
     timestamp: map['timestamp'],
   );
@@ -118,7 +123,7 @@ class ChatMessage {
 
 class ChatSession {
   final String id;
-  String title; // First prompt usually
+  String title;
   final int createdAt;
   List<ChatMessage> messages;
 
@@ -169,10 +174,37 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _stopRequested = false;
   File? _storageFile;
 
+  // --- NEW FEATURES VARIABLES ---
+  String _selectedModel = "SkyGen"; // Defaults to Text AI
+  File? _pickedImage;
+  String? _uploadedImgBBUrl;
+  bool _isUploadingImage = false;
+  bool _showPlusIcon = true; // For single line logic
+
   @override
   void initState() {
     super.initState();
     _initStorage();
+    _promptController.addListener(_handleInputListener);
+  }
+
+  @override
+  void dispose() {
+    _promptController.removeListener(_handleInputListener);
+    _promptController.dispose();
+    super.dispose();
+  }
+
+  void _handleInputListener() {
+    // Hide plus icon if multiline
+    final isMultiline = _promptController.text.contains('\n') || _promptController.text.length > 30;
+    if (_showPlusIcon == isMultiline) {
+       setState(() {
+         _showPlusIcon = !isMultiline;
+       });
+    }
+    // Update UI for send button state
+    setState(() {}); 
   }
 
   // --- STORAGE & SESSION MANAGEMENT ---
@@ -187,12 +219,10 @@ class _ChatScreenState extends State<ChatScreen> {
         final List<dynamic> jsonList = jsonDecode(content);
         setState(() {
           _sessions = jsonList.map((e) => ChatSession.fromMap(e)).toList();
-          // Sort by newest first
           _sessions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
         });
       }
 
-      // If no sessions, create one, else load the most recent
       if (_sessions.isEmpty) {
         _createNewSession(isFirstLoad: true);
       } else {
@@ -227,15 +257,15 @@ class _ChatScreenState extends State<ChatScreen> {
     );
 
     setState(() {
-      _sessions.insert(0, newSession); // Add to top
+      _sessions.insert(0, newSession);
       _currentSessionId = newId;
       _isGenerating = false;
       _promptController.clear();
+      _clearAttachment(); // Clear image on new chat
     });
 
     if (!isFirstLoad) {
       _saveData();
-      // Close drawer if open
       if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
         Navigator.pop(context); 
       }
@@ -246,8 +276,9 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _currentSessionId = sessionId;
       _isGenerating = false; 
+      _clearAttachment();
     });
-    Navigator.pop(context); // Close drawer
+    Navigator.pop(context);
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
 
@@ -265,13 +296,141 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // --- CORE LOGIC: IMAGE GENERATION ---
+  // --- NEW: MODEL & ATTACHMENT LOGIC ---
+
+  void _openModelSelector() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Container(
+          height: MediaQuery.of(context).size.height * 0.5,
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text("Select AI Model", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 20),
+              _buildModelTile("SkyGen", "Advanced Text AI Chat", Icons.chat_bubble_outline),
+              const SizedBox(height: 10),
+              _buildModelTile("Sky-Img", "AI Image Generation", Icons.image_outlined),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildModelTile(String id, String subtitle, IconData icon) {
+    final isSelected = _selectedModel == id;
+    return InkWell(
+      onTap: () {
+        setState(() => _selectedModel = id);
+        Navigator.pop(context);
+      },
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF007AFF).withOpacity(0.1) : Colors.grey[50],
+          border: Border.all(color: isSelected ? const Color(0xFF007AFF) : Colors.grey[200]!),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: isSelected ? const Color(0xFF007AFF) : Colors.black54),
+            const SizedBox(width: 16),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(id, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                Text(subtitle, style: const TextStyle(color: Colors.grey, fontSize: 12)),
+              ],
+            ),
+            const Spacer(),
+            if (isSelected) const Icon(Icons.check_circle, color: Color(0xFF007AFF)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickImage() async {
+    // Request permission only on click
+    if (Platform.isAndroid) {
+      // Android 13+ use PHOTOS, older use STORAGE
+      Map<Permission, PermissionStatus> statuses = await [
+        Permission.storage,
+        Permission.photos,
+      ].request();
+    }
+
+    try {
+      final ImagePicker picker = ImagePicker();
+      final XFile? image = await picker.pickImage(source: ImageSource.gallery);
+      
+      if (image != null) {
+        setState(() {
+          _pickedImage = File(image.path);
+          _isUploadingImage = true;
+        });
+        
+        await _uploadToImgBB(File(image.path));
+      }
+    } catch (e) {
+      debugPrint("Image picker error: $e");
+    }
+  }
+
+  Future<void> _uploadToImgBB(File imageFile) async {
+    try {
+      // Free ImgBB API Key (Ideally this should be user provided or env var)
+      // Using a generic logic structure. 
+      const apiKey = "6d207e02198a847aa98d0a2a901485a5"; 
+      final uri = Uri.parse("https://api.imgbb.com/1/upload?key=$apiKey");
+      
+      var request = http.MultipartRequest('POST', uri);
+      request.files.add(await http.MultipartFile.fromPath('image', imageFile.path));
+      
+      var res = await request.send();
+      var responseBody = await res.stream.bytesToString();
+      
+      if (res.statusCode == 200) {
+        final data = jsonDecode(responseBody);
+        setState(() {
+          _uploadedImgBBUrl = data['data']['url'];
+          _isUploadingImage = false;
+        });
+      } else {
+        throw Exception("ImgBB Upload Failed");
+      }
+    } catch (e) {
+      setState(() {
+        _pickedImage = null; // Remove preview on fail
+        _isUploadingImage = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Upload failed: $e")));
+    }
+  }
+
+  void _clearAttachment() {
+    setState(() {
+      _pickedImage = null;
+      _uploadedImgBBUrl = null;
+      _isUploadingImage = false;
+    });
+  }
+
+  // --- CORE LOGIC: SEND MESSAGE ---
 
   Future<void> _handleSubmitted() async {
     final prompt = _promptController.text.trim();
-    if (prompt.isEmpty) return;
+    // Rule: Text mandatory. Image + Text OK. Image alone NO.
+    if (prompt.isEmpty) return; 
 
-    // Update Session Title if it's the first message
+    // Update Session Title
     final sessionIndex = _sessions.indexWhere((s) => s.id == _currentSessionId);
     if (sessionIndex != -1 && _sessions[sessionIndex].messages.isEmpty) {
       setState(() {
@@ -279,10 +438,12 @@ class _ChatScreenState extends State<ChatScreen> {
       });
     }
 
+    // Add User Message
     final userMsg = ChatMessage(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       text: prompt,
       type: MessageType.user,
+      attachedImageUrl: _uploadedImgBBUrl, // Save attached image URL
       timestamp: DateTime.now().millisecondsSinceEpoch,
     );
 
@@ -296,7 +457,59 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
     _saveData();
 
+    // Determine Logic based on Model and Attachment
+    if (_selectedModel == "SkyGen" && _uploadedImgBBUrl == null) {
+      await _processTextAI(prompt);
+    } else {
+      await _processImageGeneration(prompt, _uploadedImgBBUrl);
+    }
+
+    // Clear attachment after sending
+    _clearAttachment();
+  }
+
+  // --- LOGIC: TEXT AI ---
+  Future<void> _processTextAI(String prompt) async {
     final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
+    final aiMsg = ChatMessage(
+      id: aiMsgId,
+      text: "Thinking...",
+      type: MessageType.ai,
+      status: GenStatus.waiting,
+      timestamp: DateTime.now().millisecondsSinceEpoch,
+    );
+
+    setState(() => _currentSession.messages.add(aiMsg));
+    _scrollToBottom();
+
+    try {
+      final url = Uri.parse("https://ai-hyper.vercel.app/api");
+      final response = await http.post(
+        url,
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({"q": prompt}),
+      );
+
+      if (_stopRequested) throw Exception("Stopped");
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final answer = data["results"]["answer"] ?? "No response.";
+        _updateMessageStatus(aiMsgId, GenStatus.completed, errorText: answer);
+      } else {
+        throw Exception("API Error");
+      }
+    } catch (e) {
+      _updateMessageStatus(aiMsgId, GenStatus.error, errorText: "Error: $e");
+    } finally {
+      setState(() => _isGenerating = false);
+      _saveData();
+    }
+  }
+
+  // --- LOGIC: IMAGE GENERATION ---
+  Future<void> _processImageGeneration(String prompt, String? attachmentUrl) async {
+     final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
     final aiMsg = ChatMessage(
       id: aiMsgId,
       text: "Generating image...",
@@ -305,38 +518,40 @@ class _ChatScreenState extends State<ChatScreen> {
       timestamp: DateTime.now().millisecondsSinceEpoch,
     );
 
-    setState(() {
-      _currentSession.messages.add(aiMsg);
-    });
+    setState(() => _currentSession.messages.add(aiMsg));
     _scrollToBottom();
 
     try {
-      // API 1: Request
-      final genUrl = Uri.parse("https://gen-z-image.vercel.app/gen");
-      // Use try-catch specifically for network errors
+      Uri genUrl;
+      Map<String, dynamic> body;
+
+      if (attachmentUrl != null) {
+        // Image + Text API
+        genUrl = Uri.parse("https://gen-z-image.vercel.app/image/gen");
+        body = {"q": prompt, "url": attachmentUrl};
+      } else {
+        // Text to Image API
+        genUrl = Uri.parse("https://gen-z-image.vercel.app/gen");
+        body = {"q": prompt};
+      }
+
       final response = await http.post(
         genUrl,
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"q": prompt}),
+        body: jsonEncode(body),
       ).timeout(const Duration(seconds: 20));
 
-      if (_stopRequested) throw Exception("Stopped by user");
+      if (_stopRequested) throw Exception("Stopped");
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         _currentGenId = data["results"]["id"];
         await _pollForImage(aiMsgId, _currentGenId!);
       } else {
-        throw Exception("Server Error: ${response.statusCode}");
+        throw Exception("Server Error");
       }
     } catch (e) {
-      String errorMsg = "Something went wrong.";
-      if (e.toString().contains("SocketException")) {
-        errorMsg = "No Internet Connection. Please check your data/wifi.";
-      } else if (e.toString().contains("Timeout")) {
-        errorMsg = "Request timed out. Server is busy.";
-      }
-      _updateMessageStatus(aiMsgId, GenStatus.error, errorText: errorMsg);
+      _updateMessageStatus(aiMsgId, GenStatus.error, errorText: "Failed: $e");
     } finally {
       if (mounted) {
         setState(() {
@@ -350,36 +565,29 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _pollForImage(String msgId, String generationId) async {
     int attempts = 0;
-    const maxAttempts = 30; // ~60 seconds
+    const maxAttempts = 30; 
     
     while (attempts < maxAttempts) {
       if (_stopRequested) {
-        _updateMessageStatus(msgId, GenStatus.stopped, errorText: "Generation stopped.");
+        _updateMessageStatus(msgId, GenStatus.stopped, errorText: "Stopped.");
         return;
       }
-
       await Future.delayed(const Duration(seconds: 2));
-      
       try {
         final checkUrl = Uri.parse("https://gen-z-image.vercel.app/check?id=$generationId");
         final response = await http.get(checkUrl);
-
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
           final List<dynamic> urls = data["results"]["urls"] ?? [];
-
           if (urls.isNotEmpty) {
             _updateMessageStatus(msgId, GenStatus.completed, imageUrl: urls.first);
             return;
           }
         }
-      } catch (e) {
-        debugPrint("Polling flicker: $e");
-      }
+      } catch (e) { /* ignore */ }
       attempts++;
     }
-    
-    _updateMessageStatus(msgId, GenStatus.error, errorText: "Generation took too long.");
+    _updateMessageStatus(msgId, GenStatus.error, errorText: "Timeout.");
   }
 
   void _updateMessageStatus(String msgId, GenStatus status, {String? imageUrl, String? errorText}) {
@@ -392,7 +600,7 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() {
         _sessions[sIndex].messages[mIndex] = ChatMessage(
           id: msgId,
-          text: errorText ?? (status == GenStatus.completed ? "Image generated successfully" : _sessions[sIndex].messages[mIndex].text),
+          text: errorText ?? _sessions[sIndex].messages[mIndex].text,
           type: MessageType.ai,
           imageUrl: imageUrl,
           status: status,
@@ -404,11 +612,33 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  // --- DOWNLOAD LOGIC ---
+
   Future<void> _downloadImage(String url) async {
+    // Request Storage Permission
+    if (Platform.isAndroid) {
+       var status = await Permission.storage.request();
+       if (status.isDenied) {
+         // Try Manage External for Android 11+ if needed, but stick to simple first
+         // For GitHub build safety, simple write external
+       }
+    }
+
     try {
-      final dir = await getApplicationDocumentsDirectory();
+      // Create Folder /SkyGen/
+      Directory? directory;
+      if (Platform.isAndroid) {
+        directory = Directory('/storage/emulated/0/SkyGen');
+      } else {
+        directory = await getApplicationDocumentsDirectory();
+      }
+
+      if (!await directory.exists()) {
+        await directory.create(recursive: true);
+      }
+
       final fileName = "SkyGen_${DateTime.now().millisecondsSinceEpoch}.png";
-      final file = File("${dir.path}/$fileName");
+      final file = File("${directory.path}/$fileName");
 
       final response = await http.get(Uri.parse(url));
       await file.writeAsBytes(response.bodyBytes);
@@ -416,24 +646,14 @@ class _ChatScreenState extends State<ChatScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Row(
-              children: const [
-                Icon(Icons.check_circle, color: Colors.white),
-                SizedBox(width: 10),
-                Text("Saved to Documents Folder"),
-              ],
-            ),
+            content: Text("Saved to ${file.path}"),
             backgroundColor: Colors.black87,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Save failed: $e")),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Save failed: $e")));
       }
     }
   }
@@ -442,90 +662,42 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Current messages to display
-    final currentMessages = _sessions.isEmpty 
-        ? <ChatMessage>[] 
-        : _currentSession.messages;
+    final currentMessages = _sessions.isEmpty ? <ChatMessage>[] : _currentSession.messages;
 
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: Colors.white,
       
-      // 1. DRAWER (HISTORY)
-      drawer: Drawer(
-        backgroundColor: Colors.white,
-        surfaceTintColor: Colors.white,
-        child: Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.fromLTRB(20, 50, 20, 20),
-              width: double.infinity,
-              color: Colors.white,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: const [
-                  Text("SkyGen History", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-                  SizedBox(height: 5),
-                  Text("Your creative journey", style: TextStyle(color: Colors.grey)),
-                ],
-              ),
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: ListView.builder(
-                padding: EdgeInsets.zero,
-                itemCount: _sessions.length,
-                itemBuilder: (context, index) {
-                  final session = _sessions[index];
-                  final bool isActive = session.id == _currentSessionId;
-                  return ListTile(
-                    tileColor: isActive ? Colors.grey[100] : Colors.transparent,
-                    leading: const Icon(Icons.chat_bubble_outline_rounded, color: Colors.black54),
-                    title: Text(
-                      session.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
-                        color: Colors.black87,
-                      ),
-                    ),
-                    onTap: () => _switchSession(session.id),
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
+      drawer: _buildDrawer(),
 
-      // 2. APP BAR (Redesigned)
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.menu_rounded, size: 28),
           onPressed: () => _scaffoldKey.currentState?.openDrawer(),
         ),
-        title: const Text("SkyGen AI"),
+        title: GestureDetector(
+          onTap: _openModelSelector,
+          child: Row(
+            children: [
+              Text(_selectedModel),
+              const Icon(Icons.arrow_drop_down, color: Colors.black54),
+            ],
+          ),
+        ),
         centerTitle: false,
-        titleSpacing: 0,
         actions: [
-          IconButton(
+           IconButton(
             icon: Container(
               padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.grey[100],
-                shape: BoxShape.circle,
-              ),
+              decoration: BoxDecoration(color: Colors.grey[100], shape: BoxShape.circle),
               child: const Icon(Icons.add, color: Colors.black87),
             ),
-            tooltip: "New Chat",
             onPressed: () => _createNewSession(),
           ),
           const SizedBox(width: 16),
         ],
       ),
 
-      // 3. BODY
       body: Column(
         children: [
           Expanded(
@@ -543,9 +715,47 @@ class _ChatScreenState extends State<ChatScreen> {
                     },
                   ),
           ),
-          
-          // 4. INPUT AREA
           _buildInputArea(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDrawer() {
+    return Drawer(
+      backgroundColor: Colors.white,
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.fromLTRB(20, 50, 20, 20),
+            width: double.infinity,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: const [
+                Text("SkyGen History", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                SizedBox(height: 5),
+                Text("Your creative journey", style: TextStyle(color: Colors.grey)),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: ListView.builder(
+              padding: EdgeInsets.zero,
+              itemCount: _sessions.length,
+              itemBuilder: (context, index) {
+                final session = _sessions[index];
+                final isActive = session.id == _currentSessionId;
+                return ListTile(
+                  tileColor: isActive ? Colors.grey[100] : Colors.transparent,
+                  leading: const Icon(Icons.chat_bubble_outline_rounded, color: Colors.black54),
+                  title: Text(session.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontWeight: isActive ? FontWeight.w600 : FontWeight.normal)),
+                  onTap: () => _switchSession(session.id),
+                );
+              },
+            ),
+          ),
         ],
       ),
     );
@@ -557,54 +767,98 @@ class _ChatScreenState extends State<ChatScreen> {
       decoration: BoxDecoration(
         color: Colors.white,
         boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, -5),
-          )
+          BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -5))
         ],
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFFF2F4F7), // Light grey input bg
-                borderRadius: BorderRadius.circular(24),
+          // Preview Attachment
+          if (_pickedImage != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Stack(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.file(_pickedImage!, height: 80, width: 80, fit: BoxFit.cover),
+                  ),
+                  if (_isUploadingImage)
+                    const Positioned.fill(child: Center(child: CircularProgressIndicator(strokeWidth: 2))),
+                  Positioned(
+                    top: 2, right: 2,
+                    child: GestureDetector(
+                      onTap: _clearAttachment,
+                      child: Container(
+                         padding: const EdgeInsets.all(2),
+                         decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+                         child: const Icon(Icons.close, size: 16, color: Colors.red),
+                      ),
+                    ),
+                  )
+                ],
               ),
-              child: TextField(
-                controller: _promptController,
-                enabled: !_isGenerating,
-                maxLines: 4,
-                minLines: 1,
-                style: const TextStyle(color: Colors.black87, fontSize: 16),
-                decoration: const InputDecoration(
-                  hintText: "Describe an image...",
-                  hintStyle: TextStyle(color: Colors.grey),
-                  contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                  border: InputBorder.none,
+            ),
+          
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF2F4F7),
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      // UPLOAD BUTTON (Plus Icon)
+                      if (_showPlusIcon)
+                        IconButton(
+                          icon: const Icon(Icons.add, color: Colors.grey),
+                          onPressed: _pickImage,
+                        ),
+                      
+                      Expanded(
+                        child: TextField(
+                          controller: _promptController,
+                          enabled: !_isGenerating,
+                          maxLines: 4,
+                          minLines: 1,
+                          style: const TextStyle(color: Colors.black87, fontSize: 16),
+                          decoration: const InputDecoration(
+                            hintText: "Message...",
+                            hintStyle: TextStyle(color: Colors.grey),
+                            contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 14),
+                            border: InputBorder.none,
+                          ),
+                          onSubmitted: (_) => _isGenerating ? null : _handleSubmitted(),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-                onSubmitted: (_) => _isGenerating ? null : _handleSubmitted(),
               ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          GestureDetector(
-            onTap: _isGenerating ? () => setState(() => _stopRequested = true) : _handleSubmitted,
-            child: Container(
-              width: 50,
-              height: 50,
-              decoration: BoxDecoration(
-                color: _isGenerating ? Colors.redAccent : Colors.black,
-                shape: BoxShape.circle,
+              const SizedBox(width: 10),
+              GestureDetector(
+                onTap: _isGenerating ? () => setState(() => _stopRequested = true) : _handleSubmitted,
+                child: Container(
+                  width: 50,
+                  height: 50,
+                  decoration: BoxDecoration(
+                    color: (_promptController.text.isEmpty) && !_isGenerating 
+                        ? Colors.grey 
+                        : (_isGenerating ? Colors.redAccent : Colors.black),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    _isGenerating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+                    color: Colors.white,
+                    size: 26,
+                  ),
+                ),
               ),
-              child: Icon(
-                _isGenerating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
-                color: Colors.white,
-                size: 26,
-              ),
-            ),
+            ],
           ),
         ],
       ),
@@ -654,12 +908,25 @@ class ChatBubble extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
-        color: const Color(0xFFF2F2F2), // Light grey for user
+        color: const Color(0xFFF2F2F2),
         borderRadius: BorderRadius.circular(20),
       ),
-      child: Text(
-        message.text,
-        style: const TextStyle(fontSize: 16, color: Colors.black87, height: 1.4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (message.attachedImageUrl != null)
+            Padding(
+               padding: const EdgeInsets.only(bottom: 8),
+               child: ClipRRect(
+                 borderRadius: BorderRadius.circular(10),
+                 child: Image.network(message.attachedImageUrl!, width: 150, fit: BoxFit.cover),
+               ),
+            ),
+          Text(
+            message.text,
+            style: const TextStyle(fontSize: 16, color: Colors.black87, height: 1.4),
+          ),
+        ],
       ),
     );
   }
@@ -670,8 +937,19 @@ class ChatBubble extends StatelessWidget {
       children: [
         if (message.status == GenStatus.completed && message.imageUrl != null)
           _buildImagePreview(context, message.imageUrl!)
-        else if (message.status == GenStatus.generating)
-          _buildGeneratingState()
+        else if (message.status == GenStatus.completed && message.imageUrl == null)
+           // Text AI Response (Markdown)
+           Container(
+             constraints: const BoxConstraints(maxWidth: 300),
+             child: MarkdownBody(
+               data: message.text,
+               styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+                 p: const TextStyle(fontSize: 16, color: Colors.black87),
+               ),
+             ),
+           )
+        else if (message.status == GenStatus.generating || message.status == GenStatus.waiting)
+          _buildGeneratingState(message.status == GenStatus.generating ? "Creating masterpiece..." : "Thinking...")
         else if (message.status == GenStatus.error || message.status == GenStatus.stopped)
           _buildErrorState(),
       ],
@@ -724,10 +1002,10 @@ class ChatBubble extends StatelessWidget {
     );
   }
 
-  Widget _buildGeneratingState() {
+  Widget _buildGeneratingState(String text) {
     return Container(
       width: 260,
-      height: 260,
+      height: 100, // Smaller for text AI, fixed height for consistency
       decoration: BoxDecoration(
         color: Colors.grey[100],
         borderRadius: BorderRadius.circular(16),
@@ -735,10 +1013,10 @@ class ChatBubble extends StatelessWidget {
       ),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
-        children: const [
-          TypingIndicator(),
-          SizedBox(height: 16),
-          Text("Creating masterpiece...", style: TextStyle(color: Colors.grey, fontSize: 12)),
+        children: [
+          const TypingIndicator(),
+          const SizedBox(height: 16),
+          Text(text, style: const TextStyle(color: Colors.grey, fontSize: 12)),
         ],
       ),
     );
@@ -780,22 +1058,13 @@ class WelcomePlaceholder extends StatelessWidget {
         children: [
           Container(
             padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: Colors.grey[50],
-              shape: BoxShape.circle,
-            ),
+            decoration: BoxDecoration(color: Colors.grey[50], shape: BoxShape.circle),
             child: const Icon(Icons.auto_awesome_rounded, size: 40, color: Colors.black87),
           ),
           const SizedBox(height: 24),
-          const Text(
-            "What can I create for you?",
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-          ),
+          const Text("What can I create for you?", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          const Text(
-            "Start by typing a prompt below",
-            style: TextStyle(color: Colors.grey),
-          ),
+          const Text("Select a model or type a prompt", style: TextStyle(color: Colors.grey)),
         ],
       ),
     );
@@ -838,8 +1107,7 @@ class _TypingIndicatorState extends State<TypingIndicator> with SingleTickerProv
               return Opacity(
                 opacity: (value + 1) / 2.0 * 0.6 + 0.4,
                 child: Container(
-                  width: 8,
-                  height: 8,
+                  width: 8, height: 8,
                   decoration: const BoxDecoration(color: Colors.black87, shape: BoxShape.circle),
                 ),
               );
