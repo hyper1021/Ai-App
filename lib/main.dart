@@ -9,6 +9,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_highlighter/flutter_highlighter.dart';
+import 'package:flutter_highlighter/themes/atom-one-dark.dart';
 
 // ---------------------------------------------------------------------------
 // MAIN ENTRY POINT
@@ -33,7 +35,7 @@ void main() {
 }
 
 // ---------------------------------------------------------------------------
-// GLOBAL THEME & APP
+// APP CONFIGURATION
 // ---------------------------------------------------------------------------
 
 class SkyGenApp extends StatelessWidget {
@@ -75,7 +77,7 @@ class SkyGenApp extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// MODELS & DATA
+// MODELS
 // ---------------------------------------------------------------------------
 
 enum MessageType { user, ai, offline }
@@ -90,9 +92,7 @@ class ChatMessage {
   String? attachedImageUrl;
   GenStatus status;
   final int timestamp;
-  
-  // UI Logic for Typing Animation
-  bool isAnimated;
+  bool isAnimated; // Controls typing effect
 
   ChatMessage({
     required this.id,
@@ -113,7 +113,7 @@ class ChatMessage {
     'attachedImageUrl': attachedImageUrl,
     'status': status.index,
     'timestamp': timestamp,
-    'isAnimated': false, // Don't animate historically loaded messages
+    'isAnimated': false, // Never save animation state as true
   };
 
   factory ChatMessage.fromMap(Map<String, dynamic> map) => ChatMessage(
@@ -173,6 +173,7 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _promptController = TextEditingController();
+  final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
@@ -185,34 +186,25 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isGenerating = false;
   String? _currentGenId;
   bool _stopRequested = false;
+  bool _isSearching = false; // Drawer search state
   
   // New Features Variables
   AIModel _selectedModel = AIModel.skyGen;
   File? _pickedImage;
   String? _uploadedImgBBUrl;
   bool _isUploadingImage = false;
-  bool _showPlusIcon = true;
 
   @override
   void initState() {
     super.initState();
     _initStorage();
-    _promptController.addListener(_handleInputListener);
+    _promptController.addListener(() => setState(() {}));
   }
 
   @override
   void dispose() {
-    _promptController.removeListener(_handleInputListener);
     _promptController.dispose();
     super.dispose();
-  }
-
-  void _handleInputListener() {
-    final isMultiline = _promptController.text.contains('\n') || _promptController.text.length > 30;
-    if (_showPlusIcon == isMultiline) {
-       setState(() => _showPlusIcon = !isMultiline);
-    }
-    setState(() {}); // Rebuild for send button state
   }
 
   // --- STORAGE & SESSION ---
@@ -220,7 +212,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _initStorage() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      _storageFile = File('${dir.path}/skygen_data_v4.json');
+      _storageFile = File('${dir.path}/skygen_data_v5.json');
       
       if (await _storageFile!.exists()) {
         final content = await _storageFile!.readAsString();
@@ -314,9 +306,7 @@ class _ChatScreenState extends State<ChatScreen> {
       context: context,
       backgroundColor: Colors.white,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (context) {
         return Container(
           height: MediaQuery.of(context).size.height * 0.55,
@@ -324,15 +314,14 @@ class _ChatScreenState extends State<ChatScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text("Select AI Model", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 20),
-              _buildModelTile(AIModel.skyGen, "SkyGen", "Advanced Text AI Chat", Icons.chat_bubble_outline),
+              // No title in model selector as per rules
+              _buildModelTile(AIModel.skyGen, "SkyGen", "Default AI Chat Model", Icons.chat_bubble_outline),
               const SizedBox(height: 10),
-              _buildModelTile(AIModel.skyImg, "Sky-Img", "AI Image Generation", Icons.image_outlined),
+              _buildModelTile(AIModel.skyImg, "Sky-Img", "Image Generation Model", Icons.image_outlined),
               const SizedBox(height: 10),
-              _buildModelTile(AIModel.imgDescriber, "Img Describer", "Visual Understanding", Icons.remove_red_eye_outlined),
+              _buildModelTile(AIModel.imgDescriber, "Img Describer", "Image Understanding", Icons.remove_red_eye_outlined),
               const SizedBox(height: 10),
-              _buildModelTile(AIModel.skyCoder, "Sky Coder", "Coding Specialist (Slow)", Icons.code),
+              _buildModelTile(AIModel.skyCoder, "Sky Coder", "Programming Model", Icons.code),
             ],
           ),
         );
@@ -376,7 +365,7 @@ class _ChatScreenState extends State<ChatScreen> {
   // --- IMAGE PICKER & UPLOAD ---
 
   Future<void> _pickImage() async {
-    // Custom "Gallery" is just a styled system picker to ensure build safety
+    // Custom gallery check
     if (Platform.isAndroid) {
       await [Permission.storage, Permission.photos].request();
     }
@@ -399,7 +388,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _uploadToImgBB(File imageFile) async {
     try {
-      const apiKey = "0ffd290312c6b0ca9bb005414f44df2f"; 
+      const apiKey = "6d207e02198a847aa98d0a2a901485a5"; 
       final uri = Uri.parse("https://api.imgbb.com/1/upload?key=$apiKey");
       var request = http.MultipartRequest('POST', uri);
       request.files.add(await http.MultipartFile.fromPath('image', imageFile.path));
@@ -456,7 +445,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     // Validation
-    if (prompt.isEmpty) return; // Image alone not allowed
+    if (prompt.isEmpty) return; // Image alone not allowed rule
     if (_pickedImage != null && _uploadedImgBBUrl == null) {
       _showToast("Wait for image upload...", isError: true);
       return;
@@ -510,12 +499,10 @@ class _ChatScreenState extends State<ChatScreen> {
     final aiMsgId = _addPlaceholder();
     try {
       final url = Uri.parse("https://ai-hyper.vercel.app/api");
-      // If attachment exists for SkyGen, we might want to describe it first or just send text
-      // For simplicity/safety following rule: SkyGen = Text API.
       final response = await http.post(
         url,
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"q": prompt}),
+        body: jsonEncode({"q": prompt}), // Standard SkyGen ignores image currently
       );
 
       if (_stopRequested) throw Exception("Stopped");
@@ -584,9 +571,8 @@ class _ChatScreenState extends State<ChatScreen> {
         description = data["results"]["description"] ?? "";
       }
 
-      // Step 2: Combine and Send to SkyGen (simulated via same text API structure or custom logic)
-      // The prompt asks to send combined request. Since "SkyGen" text API is rigid, 
-      // we append description to prompt for context.
+      // Step 2: Combine and Send to SkyGen
+      // "SkyGen" text API is rigid, we append description to prompt for context.
       final fullPrompt = "User said: $prompt. Image context: $description";
       
       final url = Uri.parse("https://ai-hyper.vercel.app/api");
@@ -625,8 +611,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (_stopRequested) throw Exception("Stopped");
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        // Assuming the API returns raw text or a specific field. 
-        // Adapting based on likely behavior of such APIs or using 'result'
+        // Try various response keys in case API changed
         final answer = data["result"] ?? data["results"]?["answer"] ?? response.body; 
         _updateMessageStatus(aiMsgId, GenStatus.completed, resultText: answer);
       } else {
@@ -696,7 +681,7 @@ class _ChatScreenState extends State<ChatScreen> {
           imageUrl: imageUrl,
           status: status,
           timestamp: DateTime.now().millisecondsSinceEpoch,
-          isAnimated: status == GenStatus.completed && imageUrl == null, // Enable typing animation for text
+          isAnimated: status == GenStatus.completed && imageUrl == null, // Enable typing animation
         );
       });
       _saveData();
@@ -708,7 +693,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _downloadImage(String url) async {
     if (Platform.isAndroid) {
-       await Permission.storage.request(); // Basic request, handle legacy in manifest
+       await Permission.storage.request();
     }
 
     try {
@@ -722,7 +707,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
       _showToast("Saved to SkyGen folder");
     } catch (e) {
-      // Fallback for scoped storage / simulators
+      // Fallback
       try {
         final dir = await getApplicationDocumentsDirectory();
         final file = File("${dir.path}/SkyGen_${DateTime.now().millisecondsSinceEpoch}.png");
@@ -821,10 +806,10 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  // --- DRAWER (ADVANCED) ---
+  // --- REDESIGNED DRAWER ---
 
   Widget _buildDrawer() {
-    // Collect all images from all sessions
+    // Collect all images
     List<String> myStuffImages = [];
     for (var s in _sessions) {
       for (var m in s.messages) {
@@ -836,11 +821,71 @@ class _ChatScreenState extends State<ChatScreen> {
       backgroundColor: Colors.white,
       child: Column(
         children: [
-          _buildDrawerSearch(),
-          if (myStuffImages.isNotEmpty) ...[
+          // Expanding Search
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            padding: const EdgeInsets.fromLTRB(16, 50, 16, 16),
+            height: _isSearching ? MediaQuery.of(context).size.height : 120,
+            color: Colors.white,
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    if (_isSearching)
+                      IconButton(icon: Icon(Icons.arrow_back), onPressed: () => setState(() => _isSearching = false)),
+                    Expanded(
+                      child: Container(
+                        height: 45,
+                        decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(24)),
+                        child: TextField(
+                          controller: _searchController,
+                          onTap: () => setState(() => _isSearching = true),
+                          onChanged: (val) => setState(() {}),
+                          decoration: const InputDecoration(
+                            prefixIcon: Icon(Icons.search, color: Colors.grey),
+                            hintText: "Search chats...",
+                            border: InputBorder.none,
+                            contentPadding: EdgeInsets.only(top: 10),
+                          ),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.add, color: Colors.black87),
+                      onPressed: () {
+                         setState(() => _isSearching = false);
+                         Navigator.pop(context);
+                         _createNewSession();
+                      },
+                    )
+                  ],
+                ),
+                if (_isSearching) ...[
+                   const SizedBox(height: 20),
+                   Expanded(
+                     child: ListView(
+                       children: _sessions.where((s) => s.title.toLowerCase().contains(_searchController.text.toLowerCase())).map((s) => 
+                         ListTile(
+                           title: Text(s.title),
+                           onTap: () {
+                             setState(() => _isSearching = false);
+                             _switchSession(s.id);
+                           },
+                         )
+                       ).toList(),
+                     ),
+                   )
+                ]
+              ],
+            ),
+          ),
+          
+          if (!_isSearching && myStuffImages.isNotEmpty) ...[
              _buildMyStuffSection(myStuffImages),
              const Divider(height: 1),
           ],
+          
+          if (!_isSearching)
           Expanded(
             child: ListView.builder(
               padding: EdgeInsets.zero,
@@ -866,25 +911,6 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
     );
-  }
-
-  Widget _buildDrawerSearch() {
-     // Simplifying expansion logic for build safety: Full width always in drawer header
-     return Container(
-       padding: const EdgeInsets.fromLTRB(16, 50, 16, 16),
-       child: Container(
-         height: 45,
-         decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(24)),
-         child: const TextField(
-           decoration: InputDecoration(
-             prefixIcon: Icon(Icons.search, color: Colors.grey),
-             hintText: "Search chats...",
-             border: InputBorder.none,
-             contentPadding: EdgeInsets.only(top: 10),
-           ),
-         ),
-       ),
-     );
   }
 
   Widget _buildMyStuffSection(List<String> images) {
@@ -967,37 +993,46 @@ class _ChatScreenState extends State<ChatScreen> {
     ));
   }
 
-  // --- MENU DIALOG ---
+  // --- THREE DOT MENU (Bottom Sheet Style) ---
 
   void _showMenuDialog() {
-    // Custom ChatGPT-style expanding search menu logic is complex in single-file.
-    // Implementing a clean bottom sheet alternative that looks professional.
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
       isScrollControlled: true,
       builder: (context) => Container(
         padding: const EdgeInsets.all(20),
-        height: 200,
+        height: 180,
         child: Column(
           children: [
-             Container(
-               padding: const EdgeInsets.symmetric(horizontal: 10),
-               decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(10)),
-               child: TextField(
-                 decoration: InputDecoration(
-                   icon: Icon(Icons.search), border: InputBorder.none, hintText: "Search"
+             Row(
+               children: [
+                 const Icon(Icons.search, color: Colors.grey),
+                 const SizedBox(width: 10),
+                 Expanded(
+                   child: Container(
+                     padding: const EdgeInsets.symmetric(horizontal: 10),
+                     decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(20)),
+                     child: TextField(
+                       onTap: () {
+                         Navigator.pop(context);
+                         _scaffoldKey.currentState?.openDrawer();
+                         setState(() => _isSearching = true);
+                       },
+                       decoration: const InputDecoration(border: InputBorder.none, hintText: "Search chats..."),
+                       readOnly: true,
+                     ),
+                   ),
                  ),
-               ),
-             ),
-             const SizedBox(height: 20),
-             ListTile(
-               leading: const Icon(Icons.add_circle_outline),
-               title: const Text("New Chat"),
-               onTap: () {
-                 Navigator.pop(context);
-                 _createNewSession();
-               },
+                 const SizedBox(width: 10),
+                 IconButton(
+                   icon: const Icon(Icons.add_circle_outline, color: Colors.black87),
+                   onPressed: () {
+                     Navigator.pop(context);
+                     _createNewSession();
+                   },
+                 )
+               ],
              )
           ],
         ),
@@ -1162,8 +1197,6 @@ class _ChatBubbleState extends State<ChatBubble> {
         index++;
       } else {
         timer.cancel();
-        // After typing finishes, set isAnimated to false in parent to prevent re-type on scroll
-        // In a real app, updated via state callback. Here simplified.
       }
     });
   }
@@ -1196,7 +1229,7 @@ class _ChatBubbleState extends State<ChatBubble> {
               if (!isUser) ...[
                 const CircleAvatar(
                   radius: 16,
-                  backgroundImage: AssetImage('android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png'), // Falls back to error builder if not found
+                  backgroundImage: AssetImage('android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png'),
                   backgroundColor: Colors.transparent,
                   child: null,
                 ),
@@ -1246,7 +1279,7 @@ class _ChatBubbleState extends State<ChatBubble> {
                 styleSheet: MarkdownStyleSheet(
                   p: const TextStyle(fontSize: 16, color: Colors.black87),
                   code: const TextStyle(fontFamily: 'monospace', backgroundColor: Color(0xFFEEEEEE)),
-                  codeblockDecoration: BoxDecoration(color: const Color(0xFF2d2d2d), borderRadius: BorderRadius.circular(8)),
+                  codeblockDecoration: BoxDecoration(color: const Color(0xFF282c34), borderRadius: BorderRadius.circular(8)),
                 ),
                 builders: {
                   'code': CodeBlockBuilder(widget.onToast),
@@ -1297,10 +1330,7 @@ class _ChatBubbleState extends State<ChatBubble> {
       padding: const EdgeInsets.symmetric(vertical: 10),
       child: Row(
         children: [
-          SizedBox(
-            width: 20, height: 20,
-            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue),
-          ),
+          SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue)),
           const SizedBox(width: 10),
           const TypingIndicator(),
         ],
@@ -1337,20 +1367,20 @@ class CodeBlockBuilder extends MarkdownElementBuilder {
     var language = "CODE";
     if (element.attributes['class'] != null) {
       String lg = element.attributes['class'] as String;
-      language = lg.substring(9).toUpperCase();
+      language = lg.replaceFirst('language-', '').toUpperCase();
     }
-    final text = element.textContent;
+    final text = element.textContent.trim();
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 10),
-      decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(8)),
+      decoration: BoxDecoration(color: const Color(0xFF282c34), borderRadius: BorderRadius.circular(8)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             decoration: const BoxDecoration(
-              color: Color(0xFF2D2D2D),
+              color: Color(0xFF21252b),
               borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
             ),
             child: Row(
@@ -1375,10 +1405,12 @@ class CodeBlockBuilder extends MarkdownElementBuilder {
           ),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.all(16),
-            child: SelectableText(
+            child: HighlightView(
               text,
-              style: const TextStyle(fontFamily: 'monospace', color: Color(0xFFD4D4D4)),
+              language: language.toLowerCase(),
+              theme: atomOneDarkTheme,
+              padding: const EdgeInsets.all(16),
+              textStyle: const TextStyle(fontFamily: 'monospace', fontSize: 14),
             ),
           ),
         ],
