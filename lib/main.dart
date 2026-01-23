@@ -320,7 +320,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       _clearAttachment();
     });
     Navigator.pop(context);
-    WidgetsBinding.instance.addPostFrameCallback(() => _scrollToBottom());
+    // FIXED: Added (_) to accept Duration
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
 
   // --- HISTORY MANAGEMENT ---
@@ -400,7 +401,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      isScrollControlled: true, // Important for fitting
+      isScrollControlled: true, 
       builder: (context) {
         return Container(
           height: MediaQuery.of(context).size.height * 0.6, // Limit height
@@ -993,7 +994,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           List<Map<String, dynamic>> musicList = [];
           
           for (var res in results) {
-            // Using the full URL at the bottom of the object (as requested)
+            // Using the full URL at the bottom of the object (as requested, 'url' key)
             String? audioUrl = res['url']; 
             
             if (audioUrl != null && audioUrl.isNotEmpty) {
@@ -1106,7 +1107,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           });
           Navigator.pop(context);
           Navigator.of(context).popUntil((route) => route.isFirst);
-          WidgetsBinding.instance.addPostFrameCallback(() => _scrollToBottom());
+          // FIXED: Added (_) to accept Duration
+          WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
           return;
         }
       }
@@ -1551,7 +1553,8 @@ class ChatBubble extends StatelessWidget {
               padding: const EdgeInsets.only(bottom: 8),
               child: GestureDetector(
                 onTap: () => Navigator.push(context, MaterialPageRoute(
-                  builder: () => FullScreenViewer(
+                  // FIXED: Added (_) to accept Context
+                  builder: (_) => FullScreenViewer(
                     item: {'type': 'image', 'url': message.attachedImageUrl!},
                     onToast: onToast,
                     onGoToChat: onGoToChat,
@@ -1725,7 +1728,8 @@ class ChatBubble extends StatelessWidget {
         children: [
           GestureDetector(
             onTap: () => Navigator.push(context, MaterialPageRoute(
-              builder: () => FullScreenViewer(
+              // FIXED: Added (_) to accept Context
+              builder: (_) => FullScreenViewer(
                 item: {'type': 'image', 'url': url},
                 onToast: onToast,
                 onGoToChat: onGoToChat,
@@ -1827,7 +1831,7 @@ class _MusicCardState extends State<MusicCard> with SingleTickerProviderStateMix
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Top Row: Image | Play | Music Text | Expand | Download
+          // Top Row: Image | Play | Music Text | Download | Expand
           Row(
             children: [
               // Cover + Play
@@ -1856,8 +1860,13 @@ class _MusicCardState extends State<MusicCard> with SingleTickerProviderStateMix
               const Text("Music", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               
               const Spacer(),
+
+              // Download Button
+              DownloadButton(url: widget.music['audio_url'], onToast: widget.onToast),
               
-              // Expand Button
+              const SizedBox(width: 8),
+
+              // Expand Button (>)
               InkWell(
                 onTap: () => setState(() => _isExpanded = !_isExpanded),
                 borderRadius: BorderRadius.circular(20),
@@ -1866,9 +1875,6 @@ class _MusicCardState extends State<MusicCard> with SingleTickerProviderStateMix
                   child: Icon(_isExpanded ? Icons.keyboard_arrow_left : Icons.keyboard_arrow_right, color: Colors.grey),
                 ),
               ),
-
-              // Download Button
-              DownloadButton(url: widget.music['audio_url'], onToast: widget.onToast),
             ],
           ),
           
@@ -1945,7 +1951,6 @@ class _DownloadButtonState extends State<DownloadButton> {
     return GestureDetector(
       onTap: _isLoading ? null : _download,
       child: Container(
-        margin: const EdgeInsets.only(left: 8),
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
           color: Colors.black.withOpacity(0.8),
@@ -2157,6 +2162,7 @@ class MyStuffPage extends StatelessWidget {
           return GestureDetector(
              onTap: () {
                 Navigator.push(context, MaterialPageRoute(
+                  // FIXED: Added (_)
                   builder: (_) => FullScreenViewer(
                     item: item, 
                     onToast: onToast,
