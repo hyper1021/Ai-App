@@ -20,6 +20,8 @@ dependencies:
   shimmer: ^3.0.0
   audioplayers: ^6.0.0
   url_launcher: ^6.2.5
+  video_player: ^2.8.2  # Added for Sky Video
+  chewie: ^1.7.5        # Added for Video UI
 
 flutter:
   uses-material-design: true
