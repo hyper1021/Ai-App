@@ -13,13 +13,13 @@ dependencies:
   image_picker: ^1.0.7
   flutter_markdown: ^0.6.14
   permission_handler: ^11.3.0
-  # Fixed dependencies
   flutter_highlight: ^0.7.0
-  photo_manager: ^3.0.0
   cached_network_image: ^3.3.1
   intl: ^0.19.0
   markdown: ^7.1.1
   shimmer: ^3.0.0
+  audioplayers: ^6.0.0
+  url_launcher: ^6.2.5
 
 flutter:
   uses-material-design: true
