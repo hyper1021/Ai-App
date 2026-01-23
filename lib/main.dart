@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -12,10 +11,11 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_highlight/flutter_highlight.dart';
 import 'package:flutter_highlight/themes/atom-one-dark.dart';
-import 'package:photo_manager/photo_manager.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:shimmer/shimmer.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 // ---------------------------------------------------------------------------
 // MAIN ENTRY POINT
@@ -29,11 +29,10 @@ void main() {
     DeviceOrientation.portraitDown,
   ]);
 
-  // Navigation Bar Color Fix (White for Light Mode)
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.dark,
-    systemNavigationBarColor: Colors.white, // Matches app BG
+    systemNavigationBarColor: Colors.white, 
     systemNavigationBarIconBrightness: Brightness.dark,
     systemNavigationBarDividerColor: Colors.transparent,
   ));
@@ -99,7 +98,9 @@ class ChatMessage {
   String? attachedImageUrl; 
   GenStatus status;
   final int timestamp;
-  String? modelName; // Store model name for specific messages
+  String? modelName;
+  // For Music: list of maps {title, audio_url, cover_url, duration}
+  List<Map<String, dynamic>>? musicResults;
 
   ChatMessage({
     required this.id,
@@ -111,6 +112,7 @@ class ChatMessage {
     this.status = GenStatus.completed,
     required this.timestamp,
     this.modelName,
+    this.musicResults,
   }) : visibleText = visibleText ?? (status == GenStatus.completed ? text : "");
 
   Map<String, dynamic> toMap() => {
@@ -123,6 +125,7 @@ class ChatMessage {
     'status': status.index,
     'timestamp': timestamp,
     'modelName': modelName,
+    'musicResults': musicResults,
   };
 
   factory ChatMessage.fromMap(Map<String, dynamic> map) => ChatMessage(
@@ -135,6 +138,9 @@ class ChatMessage {
     status: GenStatus.values[map['status']],
     timestamp: map['timestamp'],
     modelName: map['modelName'],
+    musicResults: map['musicResults'] != null 
+        ? List<Map<String, dynamic>>.from(map['musicResults']) 
+        : null,
   );
 }
 
@@ -188,7 +194,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   // Logic Variables
   List<ChatSession> _sessions = [];
-  List<String> _myStuffImages = []; 
+  
+  // My Stuff now holds Objects: {type: 'image'|'music', url: '...', cover: '...', ...}
+  List<Map<String, dynamic>> _myStuffItems = []; 
   
   // Handling Temporary New Session
   String _currentSessionId = "";
@@ -240,18 +248,28 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   Future<void> _initStorage() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      _storageFile = File('${dir.path}/skygen_data_v6.json'); // Version bump
+      _storageFile = File('${dir.path}/skygen_data_v7.json'); 
       
       if (await _storageFile!.exists()) {
         final content = await _storageFile!.readAsString();
         final Map<String, dynamic> jsonData = jsonDecode(content);
         
         final List<dynamic> sessionList = jsonData['sessions'] ?? [];
-        final List<dynamic> imgList = jsonData['myStuff'] ?? [];
+        final List<dynamic> myStuffList = jsonData['myStuff'] ?? [];
 
         setState(() {
           _sessions = sessionList.map((e) => ChatSession.fromMap(e)).toList();
-          _myStuffImages = imgList.cast<String>().toList();
+          
+          // Legacy migration check: if list of strings, convert to objects
+          if (myStuffList.isNotEmpty && myStuffList.first is String) {
+             _myStuffItems = myStuffList.map((e) => {
+               'type': 'image',
+               'url': e as String
+             }).toList();
+          } else {
+             _myStuffItems = List<Map<String, dynamic>>.from(myStuffList);
+          }
+          
           _sortSessions();
         });
       }
@@ -267,7 +285,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     try {
       final Map<String, dynamic> data = {
         'sessions': _sessions.map((e) => e.toMap()).toList(),
-        'myStuff': _myStuffImages,
+        'myStuff': _myStuffItems,
       };
       await _storageFile!.writeAsString(jsonEncode(data));
     } catch (e) {
@@ -332,7 +350,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       actions: [
         TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
         TextButton(onPressed: () {
-          // Find index for animation logic if needed, but simple removal here
           setState(() {
             _sessions.removeWhere((s) => s.id == id);
             if (_currentSessionId == id) _createTempSession();
@@ -393,27 +410,31 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (context) {
-        return Container(
-          height: MediaQuery.of(context).size.height * 0.5,
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Center(
-                child: Container(
-                  width: 40, height: 4,
-                  margin: const EdgeInsets.only(bottom: 20),
-                  decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+        return SafeArea(
+          child: Container(
+            height: MediaQuery.of(context).size.height * 0.55,
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40, height: 4,
+                    margin: const EdgeInsets.only(bottom: 20),
+                    decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+                  ),
                 ),
-              ),
-              _buildModelTile("SkyGen", "Advanced Text AI Chat", Icons.chat_bubble_outline),
-              const SizedBox(height: 10),
-              _buildModelTile("Sky-Img", "AI Image Generation", Icons.image_outlined),
-              const SizedBox(height: 10),
-              _buildModelTile("Img Describer", "Image Understanding", Icons.remove_red_eye_outlined),
-              const SizedBox(height: 10),
-              _buildModelTile("Sky Coder", "Programming Model", Icons.code_rounded),
-            ],
+                _buildModelTile("SkyGen", "Advanced Text AI Chat", Icons.chat_bubble_outline),
+                const SizedBox(height: 10),
+                _buildModelTile("Sky-Img", "AI Image Generation", Icons.image_outlined),
+                const SizedBox(height: 10),
+                _buildModelTile("Img Describer", "Image Understanding", Icons.remove_red_eye_outlined),
+                const SizedBox(height: 10),
+                _buildModelTile("Sky Coder", "Programming Model", Icons.code_rounded),
+                const SizedBox(height: 10),
+                _buildModelTile("Sky Music", "AI Music Generator", Icons.music_note_rounded),
+              ],
+            ),
           ),
         );
       },
@@ -453,32 +474,24 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
-  Future<void> _openCustomGallery() async {
-    final PermissionState ps = await PhotoManager.requestPermissionExtend();
-    if (!ps.isAuth && !ps.hasAccess) {
-        _showToast("Gallery permission denied", isError: true);
-        await openAppSettings();
-        return;
-    }
+  // --- SYSTEM IMAGE PICKER (FIXED) ---
 
-    if (!mounted) return;
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => const CustomGalleryPicker(),
-    ).then((file) {
-      if (file != null && file is File) {
+  Future<void> _pickImage() async {
+    // Request permission only if needed, otherwise rely on system picker
+    try {
+      final ImagePicker picker = ImagePicker();
+      final XFile? image = await picker.pickImage(source: ImageSource.gallery);
+      
+      if (image != null) {
         setState(() {
-          _pickedImage = file;
+          _pickedImage = File(image.path);
           _isUploadingImage = true;
         });
-        _uploadToImgBB(file);
+        _uploadToImgBB(File(image.path));
       }
-    });
+    } catch (e) {
+      _showToast("Picker Error: $e", isError: true);
+    }
   }
 
   Future<void> _uploadToImgBB(File imageFile) async {
@@ -538,42 +551,24 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   Future<void> _handleSubmitted() async {
     final prompt = _promptController.text.trim();
     
-    if (prompt.isEmpty) {
-      if (_pickedImage != null) _showToast("Text description is mandatory with image.", isError: true);
-      return;
+    // Validations
+    if (prompt.isEmpty && _pickedImage == null) return;
+    if (_pickedImage != null && prompt.isEmpty && _selectedModel != "Img Describer") {
+       _showToast("Text description is mandatory with image.", isError: true);
+       return;
     }
 
+    // Check Internet
     if (!(await _checkInternet())) {
-      setState(() {
-         if (_isTempSession) {
-             final newSess = ChatSession(id: _currentSessionId, title: "Offline", createdAt: DateTime.now().millisecondsSinceEpoch, messages: []);
-             _sessions.insert(0, newSess);
-             _isTempSession = false;
-         }
-         final sess = _sessions.firstWhere((s) => s.id == _currentSessionId);
-         sess.messages.add(ChatMessage(
-           id: DateTime.now().millisecondsSinceEpoch.toString(),
-           text: prompt,
-           type: MessageType.user,
-           attachedImageUrl: _uploadedImgBBUrl,
-           timestamp: DateTime.now().millisecondsSinceEpoch,
-         ));
-         sess.messages.add(ChatMessage(
-           id: "offline_${DateTime.now().millisecondsSinceEpoch}",
-           text: "Internet connection unavailable. Please turn on internet and try again.",
-           type: MessageType.ai,
-           status: GenStatus.error,
-           timestamp: DateTime.now().millisecondsSinceEpoch,
-         ));
-         _promptController.clear();
-         _clearAttachment();
-      });
-      _scrollToBottom();
+      // Offline handling logic...
+      _showToast("No Internet Connection", isError: true);
       return;
     }
 
+    // Initialize Temp Session if needed
     if (_isTempSession) {
-      final newTitle = prompt.length > 25 ? "${prompt.substring(0, 25)}..." : prompt;
+      String titleText = prompt.isNotEmpty ? prompt : "Image Analysis";
+      final newTitle = titleText.length > 25 ? "${titleText.substring(0, 25)}..." : titleText;
       final newSession = ChatSession(
         id: _currentSessionId, 
         title: newTitle, 
@@ -611,37 +606,39 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     String? attachment = _uploadedImgBBUrl;
     _clearAttachment(); 
 
+    // Routing
     if (_selectedModel == "Sky-Img") {
       await _processImageGeneration(prompt, attachment);
     } else if (_selectedModel == "Img Describer" && attachment != null) {
-      await _processDescriberFlow(prompt, attachment);
+      await _processDescriberFlow(attachment); // Ignore text
     } else if (_selectedModel == "Sky Coder") {
       await _processSkyCoder(prompt);
+    } else if (_selectedModel == "Sky Music") {
+      await _processMusicGeneration(prompt);
     } else {
       if (attachment != null) {
-        await _processDescriberFlow(prompt, attachment); 
+        await _processDescriberFlow(attachment); 
       } else {
         await _processTextAI(prompt, "https://ai-hyper.vercel.app/api");
       }
     }
   }
 
-  // --- TYPING ANIMATION (Double Speed) ---
+  // --- TYPING ANIMATION ---
 
   Future<void> _streamResponse(String msgId, String fullText) async {
     if (!mounted) return;
     _updateMessageStatus(msgId, GenStatus.streaming, errorText: fullText); 
     
     int currentIndex = 0;
-    const chunkSize = 10; // Increased speed (Double of 5)
+    const chunkSize = 10; 
     
     while (currentIndex < fullText.length) {
       if (_stopRequested) {
         _updateMessageStatus(msgId, GenStatus.stopped);
         return;
       }
-      
-      await Future.delayed(const Duration(milliseconds: 10)); // Faster tick
+      await Future.delayed(const Duration(milliseconds: 10)); 
       
       currentIndex = min(currentIndex + chunkSize, fullText.length);
       final currentVisible = fullText.substring(0, currentIndex);
@@ -666,7 +663,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
     final aiMsg = ChatMessage(
       id: aiMsgId,
-      text: "Thinking...", // Initial placeholder
+      text: "Thinking...",
       visibleText: "",
       type: MessageType.ai,
       status: GenStatus.waiting, 
@@ -706,54 +703,21 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _processSkyCoder(String prompt) async {
-    final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
-    final aiMsg = ChatMessage(
-      id: aiMsgId,
-      text: "Creating Codes...",
-      visibleText: "",
-      type: MessageType.ai,
-      status: GenStatus.waiting,
-      timestamp: DateTime.now().millisecondsSinceEpoch,
-      modelName: "Sky Coder",
-    );
-
-    final currentSess = _sessions.firstWhere((s) => s.id == _currentSessionId);
-    setState(() => currentSess.messages.add(aiMsg));
-    _scrollToBottom();
-
-    try {
-      final response = await http.post(
-        Uri.parse("https://coder-bd.vercel.app/api"),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"q": prompt}),
-      ).timeout(const Duration(minutes: 5));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final answer = data["results"]["answer"] ?? "No code generated.";
-        await _streamResponse(aiMsgId, answer);
-      } else {
-        throw Exception("Coder API Failed");
-      }
-    } catch (e) {
-      _updateMessageStatus(aiMsgId, GenStatus.error, errorText: "Error: $e");
-    } finally {
-      setState(() => _isGenerating = false);
-      _saveData();
-    }
+    // Similar to TextAI but different model ID display
+    await _processTextAI(prompt, "https://coder-bd.vercel.app/api");
   }
 
-  Future<void> _processDescriberFlow(String prompt, String imgUrl) async {
+  Future<void> _processDescriberFlow(String imgUrl) async {
     final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
     final currentSess = _sessions.firstWhere((s) => s.id == _currentSessionId);
     setState(() => currentSess.messages.add(ChatMessage(
       id: aiMsgId,
-      text: "Analyzing image...",
+      text: "Analyzing Image...",
       visibleText: "",
       type: MessageType.ai,
       status: GenStatus.waiting,
       timestamp: DateTime.now().millisecondsSinceEpoch,
-      modelName: _selectedModel,
+      modelName: "Img Describer",
     )));
     _scrollToBottom();
 
@@ -763,28 +727,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       
       final descData = jsonDecode(descRes.body);
       final description = descData["results"]["description"];
-
-      final skyGenBody = {
-        "q": prompt,
-        "image": {
-          "url": imgUrl,
-          "description": description
-        }
-      };
-
-      final response = await http.post(
-        Uri.parse("https://ai-hyper.vercel.app/api"),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode(skyGenBody),
-      );
-
-       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final answer = data["results"]["answer"];
-        await _streamResponse(aiMsgId, answer);
-      } else {
-        throw Exception("SkyGen Refused Context");
-      }
+      
+      // Stream the description as Markdown
+      await _streamResponse(aiMsgId, description);
 
     } catch (e) {
        _updateMessageStatus(aiMsgId, GenStatus.error, errorText: "Error: $e");
@@ -798,13 +743,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
     final currentSess = _sessions.firstWhere((s) => s.id == _currentSessionId);
     
-    // Immediately show placeholder for image generation
     setState(() => currentSess.messages.add(ChatMessage(
       id: aiMsgId,
       text: "Generating Image...",
       visibleText: "",
       type: MessageType.ai,
-      status: GenStatus.generating, // Special status for shimmer
+      status: GenStatus.generating, 
       timestamp: DateTime.now().millisecondsSinceEpoch,
       modelName: "Sky-Img",
     )));
@@ -826,7 +770,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         genUrl,
         headers: {"Content-Type": "application/json"},
         body: jsonEncode(body),
-      ).timeout(const Duration(seconds: 20));
+      ).timeout(const Duration(seconds: 40));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -864,10 +808,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           final List<dynamic> urls = data["results"]["urls"] ?? [];
           if (urls.isNotEmpty) {
             String finalUrl = urls.first;
+            
+            // Add to My Stuff
             setState(() {
-              _myStuffImages.insert(0, finalUrl);
+              _myStuffItems.insert(0, {
+                'type': 'image',
+                'url': finalUrl
+              });
             });
-            // Update to completed with Image URL. Also change text to "Image Generated"
+            
             _updateMessageStatus(msgId, GenStatus.completed, imageUrl: finalUrl, errorText: "Image Generated");
             return;
           }
@@ -876,6 +825,128 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       attempts++;
     }
     _updateMessageStatus(msgId, GenStatus.error, errorText: "Timeout.");
+  }
+
+  // --- SKY MUSIC LOGIC ---
+
+  Future<void> _processMusicGeneration(String prompt) async {
+    final aiMsgId = "ai_${DateTime.now().millisecondsSinceEpoch}";
+    final currentSess = _sessions.firstWhere((s) => s.id == _currentSessionId);
+    
+    setState(() => currentSess.messages.add(ChatMessage(
+      id: aiMsgId,
+      text: "Composing Music...",
+      visibleText: "",
+      type: MessageType.ai,
+      status: GenStatus.generating, 
+      timestamp: DateTime.now().millisecondsSinceEpoch,
+      modelName: "Sky Music",
+    )));
+    _scrollToBottom();
+
+    try {
+      final styles = ['Rap', 'Pop', 'Rock', 'Jazz', 'Classical', 'Lofi'];
+      final randomStyle = styles[Random().nextInt(styles.length)];
+      
+      final body = {
+        "q": prompt,
+        "title": "Random",
+        "style": randomStyle,
+        "gender": "random"
+      };
+
+      final response = await http.post(
+        Uri.parse("https://gen-z-music.vercel.app/gen"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode(body),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final List<dynamic> ids = data["results"]["song_ids"] ?? [];
+        if (ids.isNotEmpty) {
+          await _pollForMusic(aiMsgId, ids.join(","));
+        } else {
+          throw Exception("No Song IDs returned");
+        }
+      } else {
+        throw Exception("Music API Failed");
+      }
+    } catch (e) {
+      _updateMessageStatus(aiMsgId, GenStatus.error, errorText: "Failed: $e");
+    } finally {
+      if (mounted) setState(() => _isGenerating = false);
+      _saveData();
+    }
+  }
+
+  Future<void> _pollForMusic(String msgId, String ids) async {
+    int attempts = 0;
+    while (attempts < 40) {
+      if (_stopRequested) {
+        _updateMessageStatus(msgId, GenStatus.stopped, errorText: "Stopped.");
+        return;
+      }
+      await Future.delayed(const Duration(seconds: 5));
+      try {
+        final checkUrl = Uri.parse("https://gen-z-music.vercel.app/check");
+        final response = await http.post(
+          checkUrl,
+          headers: {"Content-Type": "application/json"},
+          body: jsonEncode({"id": ids}),
+        );
+
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          final List<dynamic> results = data["results"];
+          
+          // Check if we have results and they have audio_url
+          if (results.isNotEmpty && results[0]["audio_url"] != null && results[0]["audio_url"].toString().length > 10) {
+             
+             List<Map<String, dynamic>> musicList = [];
+             for (var res in results) {
+               final musicItem = {
+                 'type': 'music',
+                 'title': res['title'] ?? "Song",
+                 'audio_url': res['url'],
+                 'cover_url': res['cover_url'],
+                 'lyrics': res['lyrics']
+               };
+               musicList.add(musicItem);
+               
+               // Add to My Stuff
+               setState(() {
+                 _myStuffItems.insert(0, musicItem);
+               });
+             }
+
+             // Update message
+             final sIndex = _sessions.indexWhere((s) => s.id == _currentSessionId);
+             if (sIndex != -1) {
+                final mIndex = _sessions[sIndex].messages.indexWhere((m) => m.id == msgId);
+                if (mIndex != -1) {
+                  setState(() {
+                    _sessions[sIndex].messages[mIndex] = ChatMessage(
+                      id: msgId,
+                      text: "Music Generated",
+                      visibleText: "Music Generated",
+                      type: MessageType.ai,
+                      status: GenStatus.completed,
+                      timestamp: DateTime.now().millisecondsSinceEpoch,
+                      modelName: "Sky Music",
+                      musicResults: musicList,
+                    );
+                  });
+                  _scrollToBottom();
+                }
+             }
+             return;
+          }
+        }
+      } catch (_) {}
+      attempts++;
+    }
+    _updateMessageStatus(msgId, GenStatus.error, errorText: "Music Timeout.");
   }
 
   void _updateMessageStatus(String msgId, GenStatus status, {String? imageUrl, String? errorText}) {
@@ -888,15 +959,28 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     if (mIndex != -1) {
       setState(() {
         var old = _sessions[sIndex].messages[mIndex];
+        String finalVisibleText = old.visibleText;
+        String finalText = errorText ?? old.text;
+
+        // If completed and it's text AI, show "Response Crafted" when done typing? 
+        // No, keep the text. "Response Crafted" logic applies if there is NO text (like image/music) 
+        // OR simply display the status text below.
+        
+        if (status == GenStatus.completed && imageUrl == null && old.musicResults == null) {
+           // Text AI finished
+           // Keep the text as is.
+        }
+
         _sessions[sIndex].messages[mIndex] = ChatMessage(
           id: msgId,
-          text: errorText ?? old.text,
-          visibleText: status == GenStatus.completed ? (errorText ?? old.text) : old.visibleText,
+          text: finalText,
+          visibleText: status == GenStatus.completed ? finalText : old.visibleText,
           type: MessageType.ai,
           imageUrl: imageUrl,
           status: status,
           timestamp: DateTime.now().millisecondsSinceEpoch,
           modelName: old.modelName,
+          musicResults: old.musicResults,
         );
       });
       if (status == GenStatus.completed) _scrollToBottom();
@@ -922,19 +1006,18 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     ));
   }
   
-  // Go to Chat Helper
-  void _goToChatFromImage(String imageUrl) {
+  void _goToChatFromImage(String url) {
     for (var session in _sessions) {
       for (var msg in session.messages) {
-        if (msg.imageUrl == imageUrl) {
+        if (msg.imageUrl == url || (msg.musicResults != null && msg.musicResults!.any((m) => m['cover_url'] == url))) {
           setState(() {
             _currentSessionId = session.id;
             _isTempSession = false;
             _isGenerating = false;
             _clearAttachment();
           });
-          Navigator.pop(context); // Close full screen
-          Navigator.of(context).popUntil((route) => route.isFirst); // Go to home
+          Navigator.pop(context); 
+          Navigator.of(context).popUntil((route) => route.isFirst); 
           WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
           return;
         }
@@ -972,15 +1055,17 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         ),
         centerTitle: false,
         actions: [
-          IconButton(
-            icon: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(color: Colors.grey[100], shape: BoxShape.circle),
-              child: const Icon(Icons.add, color: Colors.black87),
+          Padding(
+            padding: const EdgeInsets.only(right: 16.0), // Align with menu icon
+            child: IconButton(
+              icon: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(color: Colors.grey[100], shape: BoxShape.circle),
+                child: const Icon(Icons.add, color: Colors.black87),
+              ),
+              onPressed: _startNewChatAction,
             ),
-            onPressed: _startNewChatAction,
           ),
-          const SizedBox(width: 16),
         ],
       ),
 
@@ -1016,7 +1101,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       child: SafeArea(
         child: Column(
           children: [
-            // Search Bar Area with Animation
+            // Search Bar
             Padding(
               padding: const EdgeInsets.all(16),
               child: AnimatedContainer(
@@ -1079,14 +1164,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             ),
             
             // My Stuff Section
-            if (!_isSearchExpanded && _myStuffImages.isNotEmpty) ...[
+            if (!_isSearchExpanded && _myStuffItems.isNotEmpty) ...[
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                 child: GestureDetector(
                   onTap: () {
-                    Navigator.pop(context); // Close Drawer
+                    Navigator.pop(context); 
                     Navigator.push(context, MaterialPageRoute(builder: (_) => MyStuffPage(
-                      images: _myStuffImages, 
+                      items: _myStuffItems, 
                       onGoToChat: _goToChatFromImage,
                       onToast: _showToast,
                     )));
@@ -1105,27 +1190,41 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                 child: ListView.separated(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   scrollDirection: Axis.horizontal,
-                  itemCount: min(_myStuffImages.length, 3),
+                  itemCount: min(_myStuffItems.length, 3),
                   separatorBuilder: (_,__) => const SizedBox(width: 10),
                   itemBuilder: (ctx, i) {
+                    final item = _myStuffItems[i];
+                    final isMusic = item['type'] == 'music';
+                    final url = isMusic ? item['cover_url'] : item['url'];
+                    
                     return GestureDetector(
                       onTap: () {
-                         Navigator.pop(context); // Close Drawer
+                         Navigator.pop(context); 
                          Navigator.push(context, MaterialPageRoute(
-                          builder: (_) => FullScreenImageViewer(
-                            imageUrl: _myStuffImages[i], 
+                          builder: (_) => FullScreenViewer(
+                            item: item,
                             onToast: _showToast,
                             onGoToChat: _goToChatFromImage,
                           )
                         ));
                       },
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: CachedNetworkImage(
-                          imageUrl: _myStuffImages[i],
-                          width: 80, height: 80, fit: BoxFit.cover,
-                          placeholder: (context, url) => Container(color: Colors.grey[200]),
-                        ),
+                      child: Stack(
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: CachedNetworkImage(
+                              imageUrl: url,
+                              width: 80, height: 80, fit: BoxFit.cover,
+                              placeholder: (context, url) => Container(color: Colors.grey[200]),
+                            ),
+                          ),
+                          if (isMusic)
+                            const Positioned.fill(
+                              child: Center(
+                                child: Icon(Icons.music_note, color: Colors.white, size: 24),
+                              ),
+                            )
+                        ],
                       ),
                     );
                   },
@@ -1155,6 +1254,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                       color: session.isPinned ? const Color(0xFF007AFF) : Colors.black54,
                       size: 20,
                     ),
+                    trailing: isActive ? null : const Icon(Icons.chevron_right, size: 16, color: Colors.grey),
                     title: Text(session.title, maxLines: 1, overflow: TextOverflow.ellipsis,
                         style: TextStyle(fontWeight: isActive ? FontWeight.w600 : FontWeight.normal)),
                     onTap: () => _switchSession(session.id),
@@ -1163,34 +1263,38 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                         context: context,
                         backgroundColor: Colors.white,
                         shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-                        builder: (ctx) => Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // Drag Handle
-                            Center(
-                              child: Container(
-                                width: 40, height: 4,
-                                margin: const EdgeInsets.symmetric(vertical: 10),
-                                decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+                        builder: (ctx) => SafeArea(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Center(
+                                child: Container(
+                                  width: 40, height: 4,
+                                  margin: const EdgeInsets.symmetric(vertical: 10),
+                                  decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+                                ),
                               ),
-                            ),
-                            ListTile(
-                              leading: const Icon(Icons.edit),
-                              title: const Text("Rename"),
-                              onTap: () => _renameSession(session.id),
-                            ),
-                            ListTile(
-                              leading: const Icon(Icons.push_pin),
-                              title: Text(session.isPinned ? "Unpin" : "Pin"),
-                              onTap: () => _pinSession(session.id),
-                            ),
-                            ListTile(
-                              leading: const Icon(Icons.delete, color: Colors.red),
-                              title: const Text("Delete", style: TextStyle(color: Colors.red)),
-                              onTap: () => _deleteSession(session.id),
-                            ),
-                            const SizedBox(height: 20),
-                          ],
+                              ListTile(
+                                leading: const Icon(Icons.edit),
+                                title: const Text("Rename"),
+                                trailing: const Icon(Icons.chevron_right, size: 16),
+                                onTap: () => _renameSession(session.id),
+                              ),
+                              ListTile(
+                                leading: const Icon(Icons.push_pin),
+                                title: Text(session.isPinned ? "Unpin" : "Pin"),
+                                trailing: const Icon(Icons.chevron_right, size: 16),
+                                onTap: () => _pinSession(session.id),
+                              ),
+                              ListTile(
+                                leading: const Icon(Icons.delete, color: Colors.red),
+                                title: const Text("Delete", style: TextStyle(color: Colors.red)),
+                                trailing: const Icon(Icons.chevron_right, size: 16, color: Colors.red),
+                                onTap: () => _deleteSession(session.id),
+                              ),
+                              const SizedBox(height: 20),
+                            ],
+                          ),
                         ),
                       );
                     },
@@ -1204,7 +1308,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
-  // --- INPUT AREA (TELEGRAM STYLE) ---
+  // --- INPUT AREA (UPDATED) ---
 
   Widget _buildInputArea() {
     return Container(
@@ -1245,13 +1349,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               ),
             ),
           
-          // Telegram Style Input
+          // Input Field
           Container(
             decoration: BoxDecoration(
               color: const Color(0xFFF2F4F7),
               borderRadius: BorderRadius.circular(24),
             ),
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
@@ -1265,37 +1369,39 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                     decoration: const InputDecoration(
                       hintText: "Message",
                       hintStyle: TextStyle(color: Colors.grey),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                       border: InputBorder.none,
                     ),
                   ),
                 ),
                 
-                // ATTACH BUTTON (Only shows if empty)
+                // ATTACH BUTTON
                 if (_showPlusIcon)
-                   IconButton(
-                     icon: const Icon(Icons.attach_file, color: Colors.grey),
-                     onPressed: _openCustomGallery,
+                   SizedBox(
+                     width: 40, height: 40,
+                     child: IconButton(
+                       icon: Transform.rotate(
+                         angle: -pi / 4, // 45 degree angle like telegram
+                         child: const Icon(Icons.attach_file, color: Colors.grey),
+                       ),
+                       onPressed: _pickImage,
+                     ),
                    ),
 
-                // SEND BUTTON (Black when empty, Blue/Black when text)
-                // Using Telegram style logic
-                AnimatedContainer(
-                   duration: const Duration(milliseconds: 200),
-                   margin: const EdgeInsets.only(bottom: 6, right: 6),
-                   decoration: BoxDecoration(
-                     color: (_promptController.text.isNotEmpty || _pickedImage != null) ? const Color(0xFF007AFF) : (_isGenerating ? Colors.black : Colors.transparent),
-                     shape: BoxShape.circle
-                   ),
+                // SEND BUTTON
+                SizedBox(
+                   width: 40, height: 40,
                    child: IconButton(
+                     style: IconButton.styleFrom(
+                       backgroundColor: (_promptController.text.isNotEmpty || _pickedImage != null || _isGenerating) ? const Color(0xFF007AFF) : Colors.transparent,
+                       shape: const CircleBorder(),
+                     ),
                      icon: Icon(
                        _isGenerating ? Icons.stop_rounded : Icons.arrow_upward,
                        color: (_promptController.text.isNotEmpty || _pickedImage != null || _isGenerating) ? Colors.white : Colors.grey,
-                       size: 24,
+                       size: 22,
                      ),
                      onPressed: _isGenerating ? () => setState(() => _stopRequested = true) : _handleSubmitted,
-                     padding: const EdgeInsets.all(8),
-                     constraints: const BoxConstraints(),
                    ),
                 ),
               ],
@@ -1308,7 +1414,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 }
 
 // ---------------------------------------------------------------------------
-// WIDGETS & HELPERS
+// CHAT BUBBLE & HELPERS
 // ---------------------------------------------------------------------------
 
 class ChatBubble extends StatelessWidget {
@@ -1360,8 +1466,8 @@ class ChatBubble extends StatelessWidget {
                padding: const EdgeInsets.only(bottom: 8),
                child: GestureDetector(
                  onTap: () => Navigator.push(context, MaterialPageRoute(
-                    builder: (_) => FullScreenImageViewer(
-                      imageUrl: message.attachedImageUrl!, 
+                    builder: (_) => FullScreenViewer(
+                      item: {'type': 'image', 'url': message.attachedImageUrl!}, 
                       onToast: onToast,
                       onGoToChat: onGoToChat,
                     )
@@ -1376,10 +1482,11 @@ class ChatBubble extends StatelessWidget {
                  ),
                ),
             ),
-          Text(
-            message.text,
-            style: const TextStyle(fontSize: 16, color: Colors.black87, height: 1.4),
-          ),
+          if (message.text.isNotEmpty)
+            Text(
+              message.text,
+              style: const TextStyle(fontSize: 16, color: Colors.black87, height: 1.4),
+            ),
         ],
       ),
     );
@@ -1389,22 +1496,21 @@ class ChatBubble extends StatelessWidget {
     bool isWaiting = message.status == GenStatus.waiting || message.status == GenStatus.generating;
     bool isStreaming = message.status == GenStatus.streaming;
     
-    // Status Text
+    // Status Text Logic
     String statusText = "Thinking...";
-    if (message.text.contains("Generating Image")) statusText = "Generating Image...";
-    else if (message.text.contains("Analyzing")) statusText = "Analyzing Image...";
-    else if (message.text.contains("Codes")) statusText = "Creating Codes...";
+    if (message.text.contains("Generating Image") || message.modelName == "Sky-Img") statusText = "Generating Image...";
+    else if (message.text.contains("Analyzing") || message.modelName == "Img Describer") statusText = "Analyzing Image...";
+    else if (message.text.contains("Codes") || message.modelName == "Sky Coder") statusText = "Creating Codes...";
+    else if (message.text.contains("Music") || message.modelName == "Sky Music") statusText = "Composing Music...";
 
-    // Determine if we show rotating loader or static icon
     bool showLoader = isWaiting || isStreaming;
     
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // 1. HEADER (Custom Icon + Status + Dots)
+        // HEADER
         Row(
            children: [
-             // Custom Icon with Loader
              Stack(
                alignment: Alignment.center,
                children: [
@@ -1415,7 +1521,7 @@ class ChatBubble extends StatelessWidget {
                    ),
                  ClipOval(
                    child: CachedNetworkImage(
-                     imageUrl: "https://iili.io/f4Xfgfa.jpg", // Custom Icon
+                     imageUrl: "https://iili.io/f4Xfgfa.jpg", 
                      width: 24, height: 24, fit: BoxFit.cover,
                      placeholder: (c,u) => Container(color: Colors.grey[300]),
                      errorWidget: (c,u,e) => const Icon(Icons.auto_awesome),
@@ -1425,30 +1531,39 @@ class ChatBubble extends StatelessWidget {
              ),
              const SizedBox(width: 10),
              
-             // Dots & Status Text
              if (isWaiting) ...[
                 const TypingIndicator(),
                 const SizedBox(width: 8),
                 Text(statusText, style: const TextStyle(color: Colors.grey, fontStyle: FontStyle.italic)),
-             ] else if (message.status == GenStatus.completed && message.imageUrl != null) ...[
-                // Image Generated Text
-                const Text("Image Generated", style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
+             ] else if (message.status == GenStatus.completed) ...[
+               if (message.imageUrl != null)
+                  const Text("Image Generated", style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold))
+               else if (message.musicResults != null)
+                  const Text("Music Created", style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold))
+               else
+                  const Text("Response Crafted", style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)), // Added this
              ],
            ],
         ),
 
-        const SizedBox(height: 8), // Gap before content
+        const SizedBox(height: 8),
 
-        // 2. CONTENT (Text / Image / Error) - Starts on NEXT LINE
+        // CONTENT
         
-        // Image Result (Or Placeholder if generating)
-        if (message.status == GenStatus.generating && message.imageUrl == null)
+        // 1. Image
+        if (message.status == GenStatus.generating && message.imageUrl == null && message.modelName == "Sky-Img")
           _buildShimmerPlaceholder()
         else if (message.imageUrl != null)
           _buildImagePreview(context, message.imageUrl!),
           
-        // Text Result
-        if (message.visibleText.isNotEmpty && message.imageUrl == null)
+        // 2. Music
+        if (message.musicResults != null)
+          Column(
+            children: message.musicResults!.map((m) => MusicCard(music: m, onToast: onToast)).toList(),
+          ),
+
+        // 3. Text
+        if (message.visibleText.isNotEmpty && message.imageUrl == null && message.musicResults == null)
            Container(
              constraints: const BoxConstraints(maxWidth: 320),
              padding: const EdgeInsets.only(left: 4), 
@@ -1460,7 +1575,7 @@ class ChatBubble extends StatelessWidget {
                },
                styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
                  p: const TextStyle(fontSize: 16, color: Colors.black87, height: 1.5),
-                 code: const TextStyle(fontFamily: 'monospace', backgroundColor: Color(0xFFF0F0F0), color: Colors.redAccent), // Inline code style
+                 code: const TextStyle(fontFamily: 'monospace', backgroundColor: Color(0xFFF0F0F0), color: Colors.redAccent),
                  codeblockDecoration: BoxDecoration(
                     color: const Color(0xFF282C34),
                     borderRadius: BorderRadius.circular(8),
@@ -1503,8 +1618,8 @@ class ChatBubble extends StatelessWidget {
         children: [
           GestureDetector(
             onTap: () => Navigator.push(context, MaterialPageRoute(
-               builder: (_) => FullScreenImageViewer(
-                 imageUrl: url, 
+               builder: (_) => FullScreenViewer(
+                 item: {'type': 'image', 'url': url}, 
                  onToast: onToast,
                  onGoToChat: onGoToChat,
                )
@@ -1519,7 +1634,6 @@ class ChatBubble extends StatelessWidget {
               ),
             ),
           ),
-          // Download Button Top Right
           Positioned(
             top: 10,
             right: 10,
@@ -1549,6 +1663,96 @@ class ChatBubble extends StatelessWidget {
               style: const TextStyle(color: Colors.redAccent),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MUSIC CARD
+// ---------------------------------------------------------------------------
+
+class MusicCard extends StatefulWidget {
+  final Map<String, dynamic> music;
+  final Function(String, {bool isError}) onToast;
+  const MusicCard({super.key, required this.music, required this.onToast});
+
+  @override
+  State<MusicCard> createState() => _MusicCardState();
+}
+
+class _MusicCardState extends State<MusicCard> {
+  final AudioPlayer _player = AudioPlayer();
+  bool _isPlaying = false;
+
+  @override
+  void dispose() {
+    _player.dispose();
+    super.dispose();
+  }
+
+  Future<void> _togglePlay() async {
+    try {
+      if (_isPlaying) {
+        await _player.pause();
+      } else {
+        await _player.play(UrlSource(widget.music['audio_url']));
+      }
+      setState(() => _isPlaying = !_isPlaying);
+    } catch (e) {
+      widget.onToast("Cannot play audio", isError: true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(top: 10),
+      width: 300,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.grey[100],
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey[300]!)
+      ),
+      child: Row(
+        children: [
+          // Cover
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                CachedNetworkImage(
+                  imageUrl: widget.music['cover_url'],
+                  width: 60, height: 60, fit: BoxFit.cover,
+                ),
+                GestureDetector(
+                  onTap: _togglePlay,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(color: Colors.black.withOpacity(0.5), shape: BoxShape.circle),
+                    child: Icon(_isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          // Info
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("Generated Music", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                const SizedBox(height: 4),
+                Text("AI Song", style: const TextStyle(color: Colors.grey, fontSize: 12)),
+              ],
+            ),
+          ),
+          // Download
+          DownloadButton(url: widget.music['audio_url'], onToast: widget.onToast),
         ],
       ),
     );
@@ -1587,7 +1791,8 @@ class _DownloadButtonState extends State<DownloadButton> {
         await directory.create(recursive: true);
       }
 
-      final fileName = "SkyGen_${DateTime.now().millisecondsSinceEpoch}.png";
+      final ext = widget.url.endsWith(".mp3") ? "mp3" : "png";
+      final fileName = "SkyGen_${DateTime.now().millisecondsSinceEpoch}.$ext";
       final file = File("${directory.path}/$fileName");
 
       final response = await http.get(Uri.parse(widget.url));
@@ -1620,37 +1825,51 @@ class _DownloadButtonState extends State<DownloadButton> {
 }
 
 // ---------------------------------------------------------------------------
-// FULL SCREEN IMAGE VIEWER
+// FULL SCREEN VIEWER (IMAGE/MUSIC)
 // ---------------------------------------------------------------------------
 
-class FullScreenImageViewer extends StatelessWidget {
-  final String imageUrl;
+class FullScreenViewer extends StatelessWidget {
+  final Map<String, dynamic> item; // {type, url, cover_url...}
   final Function(String, {bool isError}) onToast;
   final Function(String) onGoToChat;
 
-  const FullScreenImageViewer({
+  const FullScreenViewer({
     super.key, 
-    required this.imageUrl, 
+    required this.item, 
     required this.onToast,
     required this.onGoToChat
   });
 
   @override
   Widget build(BuildContext context) {
+    bool isMusic = item['type'] == 'music';
+    String displayUrl = isMusic ? item['cover_url'] : item['url'];
+    String downloadUrl = isMusic ? item['audio_url'] : item['url'];
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // Zoomable Image
+          // Content
           Center(
-            child: InteractiveViewer(
-              minScale: 0.5,
-              maxScale: 4.0,
-              child: CachedNetworkImage(
-                imageUrl: imageUrl,
-                fit: BoxFit.contain,
-                placeholder: (c,u) => const CircularProgressIndicator(color: Colors.white),
-              ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                InteractiveViewer(
+                  minScale: 0.5,
+                  maxScale: 4.0,
+                  child: CachedNetworkImage(
+                    imageUrl: displayUrl,
+                    fit: BoxFit.contain,
+                    placeholder: (c,u) => const CircularProgressIndicator(color: Colors.white),
+                  ),
+                ),
+                if (isMusic) ...[
+                   const SizedBox(height: 20),
+                   const Icon(Icons.music_note, color: Colors.white, size: 40),
+                   const Text("AI Music Track", style: TextStyle(color: Colors.white)),
+                ]
+              ],
             ),
           ),
           
@@ -1660,10 +1879,9 @@ class FullScreenImageViewer extends StatelessWidget {
             right: 20,
             child: Row(
               children: [
-                _buildCircleButton(Icons.chat_bubble_outline, () => onGoToChat(imageUrl)),
+                _buildCircleButton(Icons.chat_bubble_outline, () => onGoToChat(displayUrl)),
                 const SizedBox(width: 15),
-                // Custom Download with Loader logic is needed, but we can reuse DownloadButton
-                DownloadButton(url: imageUrl, onToast: onToast), // Reusing widget
+                DownloadButton(url: downloadUrl, onToast: onToast), 
                 const SizedBox(width: 15),
                 _buildCircleButton(Icons.close, () => Navigator.pop(context)),
               ],
@@ -1771,118 +1989,17 @@ class CodeBlockWidget extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// CUSTOM GALLERY PICKER
-// ---------------------------------------------------------------------------
-
-class CustomGalleryPicker extends StatefulWidget {
-  const CustomGalleryPicker({super.key});
-
-  @override
-  State<CustomGalleryPicker> createState() => _CustomGalleryPickerState();
-}
-
-class _CustomGalleryPickerState extends State<CustomGalleryPicker> {
-  List<AssetEntity> _images = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _fetchImages();
-  }
-
-  Future<void> _fetchImages() async {
-    final albums = await PhotoManager.getAssetPathList(type: RequestType.image, onlyAll: true);
-    if (albums.isNotEmpty) {
-      final recent = await albums.first.getAssetListRange(start: 0, end: 100); 
-      setState(() {
-        _images = recent;
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        // Top Header with Drag Handle & Close
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const SizedBox(width: 24), // Balance
-              Container(
-                width: 40, height: 4,
-                decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
-              ),
-              GestureDetector(
-                onTap: () => Navigator.pop(context),
-                child: const Icon(Icons.close, color: Colors.black54),
-              ),
-            ],
-          ),
-        ),
-        // Grid
-        Expanded(
-          child: _images.isEmpty 
-            ? const Center(child: CircularProgressIndicator())
-            : GridView.builder(
-                padding: const EdgeInsets.all(2),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
-                  crossAxisSpacing: 2,
-                  mainAxisSpacing: 2,
-                ),
-                itemCount: _images.length,
-                itemBuilder: (_, index) {
-                  return GestureDetector(
-                    onTap: () async {
-                       File? file = await _images[index].file;
-                       if (mounted) Navigator.pop(context, file);
-                    },
-                    child: _MediaThumbnail(asset: _images[index]),
-                  );
-                },
-              ),
-        ),
-      ],
-    );
-  }
-}
-
-class _MediaThumbnail extends StatelessWidget {
-  final AssetEntity asset;
-  const _MediaThumbnail({required this.asset});
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<Uint8List?>(
-      future: asset.thumbnailDataWithSize(const ThumbnailSize.square(200)),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.done && snapshot.data != null) {
-          return Image.memory(
-            snapshot.data!,
-            fit: BoxFit.cover,
-          );
-        }
-        return Container(color: Colors.grey[200]);
-      },
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
 // MY STUFF PAGE
 // ---------------------------------------------------------------------------
 
 class MyStuffPage extends StatelessWidget {
-  final List<String> images;
+  final List<Map<String, dynamic>> items;
   final Function(String) onGoToChat;
   final Function(String, {bool isError}) onToast;
 
   const MyStuffPage({
     super.key, 
-    required this.images,
+    required this.items,
     required this.onGoToChat,
     required this.onToast
   });
@@ -1898,21 +2015,42 @@ class MyStuffPage extends StatelessWidget {
           crossAxisSpacing: 4, 
           mainAxisSpacing: 4
         ),
-        itemCount: images.length,
+        itemCount: items.length,
         itemBuilder: (ctx, i) {
+          final item = items[i];
+          final isMusic = item['type'] == 'music';
+          final url = isMusic ? item['cover_url'] : item['url'];
+
           return GestureDetector(
              onTap: () {
                 Navigator.push(context, MaterialPageRoute(
-                  builder: (_) => FullScreenImageViewer(
-                    imageUrl: images[i], 
+                  builder: (_) => FullScreenViewer(
+                    item: item, 
                     onToast: onToast,
                     onGoToChat: onGoToChat,
                   )
                 ));
              },
-             child: ClipRRect(
-               borderRadius: BorderRadius.circular(4),
-               child: CachedNetworkImage(imageUrl: images[i], fit: BoxFit.cover),
+             child: Stack(
+               fit: StackFit.expand,
+               children: [
+                 ClipRRect(
+                   borderRadius: BorderRadius.circular(4),
+                   child: CachedNetworkImage(imageUrl: url, fit: BoxFit.cover),
+                 ),
+                 // Type Icon (Top Right)
+                 Positioned(
+                   top: 4, right: 4,
+                   child: Container(
+                     padding: const EdgeInsets.all(4),
+                     decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(4)),
+                     child: Icon(
+                       isMusic ? Icons.music_note : Icons.image, 
+                       color: Colors.white, size: 12
+                     ),
+                   ),
+                 ),
+               ],
              ),
           );
         },
