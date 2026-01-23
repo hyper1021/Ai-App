@@ -245,7 +245,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   Future<void> _initStorage() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      _storageFile = File('${dir.path}/skygen_data_v8.json');
+      _storageFile = File('${dir.path}/skygen_data_v9.json');
 
       if (await _storageFile!.exists()) {
         final content = await _storageFile!.readAsString();
@@ -400,45 +400,43 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      isScrollControlled: true,
+      isScrollControlled: true, // Important for fitting
       builder: (context) {
         return Container(
+          height: MediaQuery.of(context).size.height * 0.6, // Limit height
           decoration: const BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
           ),
-          child: SafeArea(
-            child: Wrap(
-              children: [
-                Center(
-                  child: Container(
-                    width: 40, height: 4,
-                    margin: const EdgeInsets.only(top: 10, bottom: 20),
-                    decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
-                  ),
+          child: Column(
+            children: [
+              Center(
+                child: Container(
+                  width: 40, height: 4,
+                  margin: const EdgeInsets.only(top: 10, bottom: 10),
+                  decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
                 ),
-                Padding(
+              ),
+              Expanded(
+                child: ListView(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _buildModelTile("SkyGen", "Advanced Text AI Chat", Icons.chat_bubble_outline),
-                      const SizedBox(height: 10),
-                      _buildModelTile("Sky-Img", "Realistic Image Gen (v1)", Icons.photo_camera_back),
-                      const SizedBox(height: 10),
-                      _buildModelTile("Sky-Img v2", "Image Gen with Input (v2)", Icons.image_outlined),
-                      const SizedBox(height: 10),
-                      _buildModelTile("Img Describer", "Image Understanding", Icons.remove_red_eye_outlined),
-                      const SizedBox(height: 10),
-                      _buildModelTile("Sky Coder", "Programming Model", Icons.code_rounded),
-                      const SizedBox(height: 10),
-                      _buildModelTile("Sky Music", "AI Music Generator", Icons.music_note_rounded),
-                      const SizedBox(height: 20),
-                    ],
-                  ),
+                  children: [
+                    _buildModelTile("SkyGen", "Advanced Text AI Chat", Icons.chat_bubble_outline),
+                    const SizedBox(height: 10),
+                    _buildModelTile("Sky-Img", "High Quality Image Gen", Icons.photo_camera_back),
+                    const SizedBox(height: 10),
+                    _buildModelTile("Sky-Img v2", "Classic Image Gen (Supports Input)", Icons.image_outlined),
+                    const SizedBox(height: 10),
+                    _buildModelTile("Img Describer", "Image Understanding", Icons.remove_red_eye_outlined),
+                    const SizedBox(height: 10),
+                    _buildModelTile("Sky Coder", "Programming Model", Icons.code_rounded),
+                    const SizedBox(height: 10),
+                    _buildModelTile("Sky Music", "AI Music Generator", Icons.music_note_rounded),
+                    const SizedBox(height: 20),
+                  ],
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         );
       },
@@ -463,14 +461,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           children: [
             Icon(icon, color: isSelected ? const Color(0xFF007AFF) : Colors.black54),
             const SizedBox(width: 16),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(id, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                Text(subtitle, style: const TextStyle(color: Colors.grey, fontSize: 12)),
-              ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(id, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  Text(subtitle, style: const TextStyle(color: Colors.grey, fontSize: 12), overflow: TextOverflow.ellipsis),
+                ],
+              ),
             ),
-            const Spacer(),
             if (isSelected) const Icon(Icons.check_circle, color: Color(0xFF007AFF)),
           ],
         ),
@@ -523,6 +522,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           // Auto switch to v2 if image is attached and model is Sky-Img (v1)
           if (_selectedModel == "Sky-Img") {
             _selectedModel = "Sky-Img v2";
+            _showToast("Switched to v2 for Image Input");
           }
         });
       } else {
@@ -591,7 +591,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     // Determine actual model based on attachment
     String activeModel = _selectedModel;
     if (_uploadedImgBBUrl != null && activeModel == "Sky-Img") {
-      activeModel = "Sky-Img v2";
+      activeModel = "Sky-Img v2"; // v1 doesn't support image input
     }
 
     final userMsg = ChatMessage(
@@ -642,8 +642,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   String _parseError(dynamic responseBody) {
     try {
       final data = jsonDecode(responseBody);
-      if (data['ok'] == false && data['error'] != null) {
-        return data['error']['message'] ?? "Unknown Error";
+      if (data['ok'] == false) {
+         if (data['error'] != null && data['error']['message'] != null) {
+            return data['error']['message'];
+         }
       }
     } catch (_) {}
     return "Something went wrong.";
@@ -765,7 +767,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
-  // --- SKY IMAGE V1 (New API) ---
+  // --- SKY IMAGE V1 (Main Version) ---
   Future<void> _processSkyImgV1(String prompt) async {
     final aiMsgId = "ai${DateTime.now().millisecondsSinceEpoch}";
     final currentSess = _sessions.firstWhere((s) => s.id == _currentSessionId);
@@ -792,6 +794,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         final data = jsonDecode(response.body);
         if (data['ok'] == false) throw Exception(_parseError(response.body));
 
+        // Version 1 returns photo inside results
         String photoUrl = data["results"]["photo"];
         _handleSuccessImage(aiMsgId, photoUrl);
       } else {
@@ -805,7 +808,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
-  // --- SKY IMAGE V2 (Old API) ---
+  // --- SKY IMAGE V2 (Old Version / Image to Image) ---
   Future<void> _processSkyImgV2(String prompt, String? attachmentUrl) async {
     final aiMsgId = "ai${DateTime.now().millisecondsSinceEpoch}";
     final currentSess = _sessions.firstWhere((s) => s.id == _currentSessionId);
@@ -898,7 +901,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _updateMessageStatus(msgId, GenStatus.completed, imageUrl: url, errorText: "Image Generated");
   }
 
-  // --- SKY MUSIC LOGIC (UPDATED) ---
+  // --- SKY MUSIC LOGIC (UPDATED WITH POLLING & JSON PARSING) ---
 
   Future<void> _processMusicGeneration(String prompt) async {
     final aiMsgId = "ai${DateTime.now().millisecondsSinceEpoch}";
@@ -906,7 +909,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
     setState(() => currentSess.messages.add(ChatMessage(
       id: aiMsgId,
-      text: "Composing Music (This may take 2-5 mins)...",
+      text: "Composing Music (This may take 3-5 mins)...",
       visibleText: "",
       type: MessageType.ai,
       status: GenStatus.generating, 
@@ -958,8 +961,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     await Future.delayed(const Duration(seconds: 30));
 
     int attempts = 0;
-    // Increased loops for long wait time (up to 2-3 mins)
-    while (attempts < 40) {
+    // Increased loops for long wait time (up to 5 mins approx)
+    while (attempts < 60) {
       if (_stopRequested) {
         _updateMessageStatus(msgId, GenStatus.stopped, errorText: "Stopped.");
         return;
@@ -987,24 +990,20 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           }
 
           // Check for valid data
-          // Find the url at the bottom (usually the full url)
           List<Map<String, dynamic>> musicList = [];
           
           for (var res in results) {
-            String? audioUrl = res['url']; // The one at the bottom
+            // Using the full URL at the bottom of the object (as requested)
+            String? audioUrl = res['url']; 
             
-            // Fallback or specific extraction if needed
-            if (audioUrl == null && res['audio_url'] != null) {
-               audioUrl = res['audio_url'];
-            }
-
             if (audioUrl != null && audioUrl.isNotEmpty) {
                final musicItem = {
                  'type': 'music',
-                 'title': res['title'] ?? "Song", // Use title as fallback title
+                 'title': "Music Track", 
                  'audio_url': audioUrl,
                  'cover_url': res['cover_url'],
-                 'lyrics': res['lyrics'] ?? "No Lyrics Available" // This will be the main title display
+                 // Using lyrics as the descriptive title content for expansion
+                 'lyrics': res['lyrics'] ?? "No Description Available" 
                };
                musicList.add(musicItem);
                
@@ -1633,14 +1632,23 @@ class ChatBubble extends StatelessWidget {
 
         const SizedBox(height: 8),
 
-        // 1. Image
+        // 1. Image Placeholder / Result
         if (message.status == GenStatus.generating && message.imageUrl == null && message.modelName!.contains("Sky-Img"))
           _buildShimmerPlaceholder()
         else if (message.imageUrl != null)
           _buildImagePreview(context, message.imageUrl!),
           
-        // 2. Music (Two cards side by side if possible, or stacked)
-        if (message.musicResults != null)
+        // 2. Music Placeholders / Result
+        if (message.status == GenStatus.generating && message.modelName == "Sky Music")
+          Column(
+            children: [
+              const SizedBox(height: 10),
+               _buildMusicSkeleton(),
+               const SizedBox(height: 10),
+               _buildMusicSkeleton(),
+            ],
+          )
+        else if (message.musicResults != null)
           Wrap(
             spacing: 10,
             runSpacing: 10,
@@ -1682,6 +1690,20 @@ class ChatBubble extends StatelessWidget {
       highlightColor: Colors.grey[100]!,
       child: Container(
         width: 300, height: 300,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16)
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMusicSkeleton() {
+    return Shimmer.fromColors(
+      baseColor: Colors.grey[300]!,
+      highlightColor: Colors.grey[100]!,
+      child: Container(
+        width: 300, height: 70,
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(16)
@@ -1793,7 +1815,6 @@ class _MusicCardState extends State<MusicCard> with SingleTickerProviderStateMix
 
   @override
   Widget build(BuildContext context) {
-    // Determine Width based on screen
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
       width: 320, 
