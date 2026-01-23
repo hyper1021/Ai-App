@@ -934,12 +934,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             _clearAttachment();
           });
           Navigator.pop(context); // Close full screen
-          // Close My Stuff page if it was open (tricky, but usually pop once is enough if direct, double pop if nested)
-          // We rely on simple pop. If opened from Drawer -> My Stuff -> Full Screen, pop closes full screen.
-          // To close My Stuff page, we need to pass a callback or pop until route.
-          // For simplicity, we just pop once. User is in My Stuff.
-          // Actually, requirement says "Menu goes away and goes to chat".
-          // If we are in My Stuff page, we need to pop that too.
           Navigator.of(context).popUntil((route) => route.isFirst); // Go to home
           WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
           return;
@@ -1342,7 +1336,7 @@ class ChatBubble extends StatelessWidget {
           // Content
           Flexible(
             child: isUser 
-              ? _buildUserMessage() 
+              ? _buildUserMessage(context) 
               : _buildAIMessage(context),
           ),
         ],
@@ -1350,7 +1344,7 @@ class ChatBubble extends StatelessWidget {
     );
   }
 
-  Widget _buildUserMessage() {
+  Widget _buildUserMessage(BuildContext context) {
     return Container(
       constraints: const BoxConstraints(maxWidth: 300),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
