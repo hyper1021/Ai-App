@@ -1,5 +1,5 @@
 name: skygen_ai
-description: SkyGen AI - Advanced AI Assistant & Generator
+description: Advanced SkyGen AI Assistant
 publish_to: 'none'
 
 environment:
@@ -8,24 +8,34 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  # Networking & Async
-  http: ^1.1.0
-  path_provider: ^2.1.2
-  permission_handler: ^11.3.0
   
-  # UI & Assets
+  # Networking
+  http: ^1.1.0
+  
+  # Storage & Path
+  path_provider: ^2.1.2
+  path: ^1.8.3
+  
+  # Media handling
   image_picker: ^1.0.7
-  cached_network_image: ^3.3.1
+  video_thumbnail: ^0.5.3
+  
+  # UI Components
   flutter_markdown: ^0.6.14
   flutter_highlight: ^0.7.0
   shimmer: ^3.0.0
+  cached_network_image: ^3.3.1
+  font_awesome_flutter: ^10.6.0 # For better icons
   
-  # Media Playback
+  # Permissions
+  permission_handler: ^11.3.0
+  
+  # Audio/Video
   audioplayers: ^6.0.0
   video_player: ^2.8.2
   chewie: ^1.7.5
   
-  # Utils
+  # Utilities
   intl: ^0.19.0
   markdown: ^7.1.1
   url_launcher: ^6.2.5
