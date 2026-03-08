@@ -228,13 +228,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   final TextEditingController _searchController = TextEditingController();
 
   // State Variables
-  List<ChatSession> _sessions = [];
-  List<Map<String, dynamic>> _myStuffItems = []; // {type, url, thumbnail, title...}
+  List<ChatSession> _sessions =[];
+  List<Map<String, dynamic>> _myStuffItems =[]; // {type, url, thumbnail, title...}
   
   String _currentSessionId = "";
   bool _isTempSession = true;
   bool _isGenerating = false;
-  String? _currentGenId;
   bool _stopRequested = false;
   File? _storageFile;
 
@@ -256,7 +255,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   // TTS Player
   final AudioPlayer _ttsPlayer = AudioPlayer();
-  List<String> _ttsQueue = [];
+  List<String> _ttsQueue =[];
   bool _isPlayingTTS = false;
   String? _currentSpeakingMsgId;
 
@@ -316,8 +315,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         final content = await _storageFile!.readAsString();
         final Map<String, dynamic> jsonData = jsonDecode(content);
         
-        final List<dynamic> sessionList = jsonData['sessions'] ?? [];
-        final List<dynamic> myStuffList = jsonData['myStuff'] ?? [];
+        final List<dynamic> sessionList = jsonData['sessions'] ??[];
+        final List<dynamic> myStuffList = jsonData['myStuff'] ??[];
 
         setState(() {
           _sessions = sessionList.map((e) => ChatSession.fromMap(e)).toList();
@@ -419,7 +418,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       title: const Text("Delete Chat?"),
       content: const Text("This action cannot be undone. All associated media will be removed from history."),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      actions: [
+      actions:[
         TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
         TextButton(onPressed: () {
           Navigator.pop(ctx);
@@ -476,7 +475,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         autofocus: true,
       ),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      actions: [
+      actions:[
         TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
         TextButton(onPressed: () {
           setState(() => s.title = controller.text.trim());
@@ -500,7 +499,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   ChatSession get _currentSession {
     if (_isTempSession) {
       return _sessions.firstWhere((s) => s.id == _currentSessionId,
-        orElse: () => ChatSession(id: _currentSessionId, title: "New Chat", createdAt: DateTime.now().millisecondsSinceEpoch, messages: [])
+        orElse: () => ChatSession(id: _currentSessionId, title: "New Chat", createdAt: DateTime.now().millisecondsSinceEpoch, messages:[])
       );
     }
     return _sessions.firstWhere((s) => s.id == _currentSessionId, orElse: () => _sessions.first);
@@ -537,7 +536,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         return SizedBox( // Use SizedBox to constrain height
           height: MediaQuery.of(context).size.height * 0.65, 
           child: Column(
-            children: [
+            children:[
               Center(
                 child: Container(
                   width: 40, height: 4,
@@ -552,11 +551,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               Expanded(
                 child: ListView(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
-                  children: [
+                  children:[
                     _buildModelTile("SkyGen", "Advanced Assistant (Default)", Icons.auto_awesome),
                     _buildModelTile("Sky OCR", "Extract Text from Images", Icons.document_scanner),
                     _buildModelTile("Sky-Img", "High Quality Image Generation", Icons.photo_filter),
-                    _buildModelTile("Sky-Img v2", "Image Gen with Input Support", Icons.add_photo_alternate),
                     _buildModelTile("Sky Video", "AI Video Creator", Icons.video_library),
                     _buildModelTile("Sky Music", "AI Music Composer", Icons.music_note),
                     _buildModelTile("Sky Coder", "Specialized Code Helper", Icons.code),
@@ -592,7 +590,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           borderRadius: BorderRadius.circular(12),
         ),
         child: Row(
-          children: [
+          children:[
             Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
@@ -605,7 +603,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
+                children:[
                   Text(id, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: isSelected ? const Color(0xFF007AFF) : Colors.black87)),
                   Text(subtitle, style: const TextStyle(color: Colors.grey, fontSize: 12)),
                 ],
@@ -661,11 +659,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         setState(() {
           _uploadedImgBBUrl = data['data']['url'];
           _isUploadingImage = false;
-          
-          if (_selectedModel == "Sky-Img") {
-            _selectedModel = "Sky-Img v2";
-            _showToast("Switched to v2 for Image Input");
-          }
         });
       } else {
         throw Exception("ImgBB Upload Failed");
@@ -717,7 +710,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     String activeModel = _selectedModel;
     // Auto-Correction logic
     if (activeModel == "Sky OCR" && attachment == null) activeModel = "SkyGen";
-    if (attachment != null && activeModel == "Sky-Img") activeModel = "Sky-Img v2";
 
     _promptController.clear();
     File? localImage = _pickedImage; 
@@ -732,7 +724,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         id: _currentSessionId, 
         title: titleText, 
         createdAt: DateTime.now().millisecondsSinceEpoch, 
-        messages: []
+        messages:[]
       );
       setState(() {
         _sessions.insert(0, newSession);
@@ -766,8 +758,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     try {
       if (activeModel == "Sky-Img") {
         await _processSkyImgV1(prompt);
-      } else if (activeModel == "Sky-Img v2") {
-        await _processSkyImgV2(prompt, attachment);
       } else if (activeModel == "Sky Video") {
         await _processSkyVideo(prompt);
       } else if (activeModel == "Sky OCR" && attachment != null) {
@@ -877,7 +867,49 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _processSkyCoder(String prompt) async {
-    await _processTextAI(prompt, "https://coder-bd.vercel.app/api");
+    final aiMsgId = "ai${DateTime.now().millisecondsSinceEpoch}";
+    _addAIMessage(aiMsgId, "Generating Code...", "Sky Coder", GenStatus.waiting);
+
+    try {
+      final response = await http.post(
+        Uri.parse("https://coder-bd.vercel.app/api"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({"q": prompt}),
+      );
+
+      if (_stopRequested) throw Exception("Stopped");
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['ok'] == false) throw Exception(_parseError(response.body));
+
+        final results = data["results"] ?? {};
+        final answer = results["answer"] ?? "No description provided.";
+        final codes = results["codes"] as List<dynamic>? ??[];
+
+        String finalOutput = answer;
+        for (var codeObj in codes) {
+          final filename = codeObj["name"] ?? "file";
+          final content = codeObj["content"] ?? "";
+          
+          String lang = "";
+          if (filename.toString().contains(".")) {
+             lang = filename.toString().split(".").last;
+          }
+          
+          finalOutput += "\n\n**$filename**\n```$lang\n$content\n```";
+        }
+
+        await _streamResponse(aiMsgId, finalOutput);
+      } else {
+        throw Exception("API Error ${response.statusCode}");
+      }
+    } catch (e) {
+      _updateMessageStatus(aiMsgId, GenStatus.error, errorText: "Error: $e");
+    } finally {
+      setState(() => _isGenerating = false);
+      _saveData();
+    }
   }
 
   Future<void> _processDescriberFlow(String imgUrl) async {
@@ -975,7 +1007,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
     try {
       final response = await http.post(
-        Uri.parse("https://sky-img.vercel.app/api"),
+        Uri.parse("https://sky-gen-image.vercel.app/api"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({"q": prompt}),
       );
@@ -984,7 +1016,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         final data = jsonDecode(response.body);
         if (data['ok'] == false) throw Exception(_parseError(response.body));
 
-        String photoUrl = data["results"]["photo"];
+        String photoUrl = data["results"]["url"];
         _handleSuccessImage(aiMsgId, photoUrl);
       } else {
         throw Exception("Server Error");
@@ -997,107 +1029,40 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _processSkyImgV2(String prompt, String? attachmentUrl) async {
-    final aiMsgId = "ai${DateTime.now().millisecondsSinceEpoch}";
-    _addAIMessage(aiMsgId, "Generating Image...", "Sky-Img v2", GenStatus.generating);
-
-    try {
-      Uri genUrl;
-      Map<String, dynamic> body;
-
-      if (attachmentUrl != null) {
-        genUrl = Uri.parse("https://gen-z-image.vercel.app/image/gen");
-        body = {"q": prompt, "url": attachmentUrl};
-      } else {
-        genUrl = Uri.parse("https://gen-z-image.vercel.app/gen");
-        body = {"q": prompt};
-      }
-
-      final response = await http.post(
-        genUrl,
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode(body),
-      ).timeout(const Duration(seconds: 40));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data['ok'] == false) throw Exception(_parseError(response.body));
-
-        _currentGenId = data["results"]["id"];
-        await _pollForImageV2(aiMsgId, _currentGenId!);
-      } else {
-        throw Exception("Server Error");
-      }
-    } catch (e) {
-      _updateMessageStatus(aiMsgId, GenStatus.error, errorText: "Failed: $e");
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isGenerating = false;
-          _currentGenId = null;
-        });
-        _saveData();
-      }
-    }
-  }
-
-  Future<void> _pollForImageV2(String msgId, String generationId) async {
-    int attempts = 0;
-    while (attempts < 30) {
-      if (_stopRequested) {
-        _updateMessageStatus(msgId, GenStatus.stopped, errorText: "Stopped.");
-        return;
-      }
-      await Future.delayed(const Duration(seconds: 2));
-      try {
-        final checkUrl = Uri.parse("https://gen-z-image.vercel.app/check?id=$generationId");
-        final response = await http.get(checkUrl);
-        if (response.statusCode == 200) {
-          final data = jsonDecode(response.body);
-          if (data['ok'] == false) throw Exception(_parseError(response.body));
-
-          final List<dynamic> urls = data["results"]["urls"] ?? [];
-          if (urls.isNotEmpty) {
-            _handleSuccessImage(msgId, urls.first);
-            return;
-          }
-        }
-      } catch (_) {}
-      attempts++;
-    }
-    _updateMessageStatus(msgId, GenStatus.error, errorText: "Timeout.");
-  }
-
   Future<void> _processMusicGeneration(String prompt) async {
     final aiMsgId = "ai${DateTime.now().millisecondsSinceEpoch}";
     _addAIMessage(aiMsgId, "Composing Music...", "Sky Music", GenStatus.generating);
 
     try {
-      final styles = ['Rap', 'Pop', 'Rock', 'Jazz', 'Classical', 'Lofi'];
-      final randomStyle = styles[Random().nextInt(styles.length)];
-      
       final body = {
-        "q": prompt,
-        "title": "SkyGen Tune",
-        "style": randomStyle,
-        "gender": "female"
+        "prompt": "Generate a song based on the user's lyrics",
+        "lyrics": prompt
       };
 
       final response = await http.post(
-        Uri.parse("https://gen-z-music.vercel.app/gen"),
+        Uri.parse("https://gen-z-music-v2.vercel.app/generate"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode(body),
-      );
+      ).timeout(const Duration(minutes: 6));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        if (data['ok'] == false) throw Exception(_parseError(response.body));
+        if (data['success'] == false) throw Exception(data['message'] ?? "Music API Failed");
 
-        final List<dynamic> ids = data["results"]["song_ids"] ?? [];
-        if (ids.isNotEmpty) {
-          await _pollForMusic(aiMsgId, ids.join(","));
+        final List<dynamic> results = data["results"] ?? [];
+        if (results.isNotEmpty) {
+           final res = results[0];
+           final item = {
+             'type': 'music',
+             'audio_url': res['file_output_0'],
+             'cover_url': res['image_custom'],
+             'lyrics': prompt,
+             'title': res['title'] ?? "Generated Music"
+           };
+           setState(() => _myStuffItems.insert(0, item));
+           _updateMessageStatus(aiMsgId, GenStatus.completed, musicResults: [item]);
         } else {
-          throw Exception("No Song IDs returned");
+          throw Exception("No music results returned");
         }
       } else {
         throw Exception("Music API Failed");
@@ -1108,50 +1073,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       if (mounted) setState(() => _isGenerating = false);
       _saveData();
     }
-  }
-
-  Future<void> _pollForMusic(String msgId, String ids) async {
-    await Future.delayed(const Duration(seconds: 20)); // Wait before first poll
-    int attempts = 0;
-    while (attempts < 60) {
-      if (_stopRequested) return;
-      
-      try {
-        final checkUrl = Uri.parse("https://gen-z-music.vercel.app/check");
-        final response = await http.post(
-          checkUrl,
-          headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"id": ids}),
-        );
-
-        if (response.statusCode == 200) {
-          final data = jsonDecode(response.body);
-          if (data['results'] != null && (data['results'] as List).isNotEmpty) {
-            List<Map<String, dynamic>> musicList = [];
-            for (var res in data['results']) {
-              if (res['url'] != null) {
-                final item = {
-                   'type': 'music',
-                   'audio_url': res['url'],
-                   'cover_url': res['cover_url'],
-                   'lyrics': res['lyrics'] ?? "Instrumental",
-                   'title': res['title'] ?? "AI Music"
-                };
-                musicList.add(item);
-                setState(() => _myStuffItems.insert(0, item));
-              }
-            }
-            if (musicList.isNotEmpty) {
-              _updateMessageStatus(msgId, GenStatus.completed, musicResults: musicList);
-              return;
-            }
-          }
-        }
-      } catch (_) {}
-      await Future.delayed(const Duration(seconds: 5));
-      attempts++;
-    }
-    _updateMessageStatus(msgId, GenStatus.error, errorText: "Music Timeout");
   }
 
   // --- TTS ---
@@ -1322,7 +1243,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Row(
-        children: [
+        children:[
           Icon(isError ? Icons.error_outline : Icons.check_circle_outline, color: Colors.white),
           const SizedBox(width: 10),
           Expanded(child: Text(message)),
@@ -1365,7 +1286,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         drawer: _buildDrawer(),
         appBar: _buildAppBar(),
         body: Column(
-          children: [
+          children:[
             Expanded(
               child: currentMessages.isEmpty
                   ? _buildWelcomeScreen()
@@ -1400,7 +1321,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       ),
       // Empty title to make space
       title: const SizedBox.shrink(),
-      actions: [
+      actions:[
         // Model Selector moved here
         GestureDetector(
           onTap: _openModelSelector,
@@ -1412,7 +1333,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
-              children: [
+              children:[
                 Text(_selectedModel, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)), 
                 const SizedBox(width: 4),
                 const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.black54, size: 18),
@@ -1444,7 +1365,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       width: _isSearchExpanded ? MediaQuery.of(context).size.width : 304,
       child: SafeArea(
         child: Column(
-          children: [
+          children:[
             // Animated Search Bar
             Padding(
               padding: const EdgeInsets.all(16),
@@ -1457,7 +1378,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   borderRadius: BorderRadius.circular(25),
                 ),
                 child: Row(
-                  children: [
+                  children:[
                     IconButton(
                       icon: Icon(_isSearchExpanded ? Icons.arrow_back : Icons.search),
                       color: Colors.grey,
@@ -1503,7 +1424,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   },
                   child: const Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
+                    children:[
                       Text("My Stuff", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                       Icon(Icons.chevron_right, color: Colors.grey),
                     ],
@@ -1540,7 +1461,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(8),
                         child: Stack(
-                          children: [
+                          children:[
                             isVideo && thumb != null
                               ? Image.file(File(thumb), width: 80, height: 80, fit: BoxFit.cover)
                               : CachedNetworkImage(
@@ -1608,7 +1529,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          children: [
+          children:[
             Center(
               child: Container(
                 width: 40, height: 4,
@@ -1644,7 +1565,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 40),
         child: Column(
-          children: [
+          children:[
             // Logo
             ClipOval(
               child: Image.network(
@@ -1672,7 +1593,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                 child: Column(
                   children: [
                     Row(
-                      children: [
+                      children:[
                         _buildHomeButton("Create Image", Icons.image_outlined, "Sky-Img", Colors.purple),
                         const SizedBox(width: 12),
                         _buildHomeButton("Create Video", Icons.videocam_outlined, "Sky Video", Colors.orange),
@@ -1680,7 +1601,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                     ),
                     const SizedBox(height: 12),
                     Row(
-                      children: [
+                      children:[
                         _buildHomeButton("Create Music", Icons.music_note_outlined, "Sky Music", Colors.pink),
                         const SizedBox(width: 12),
                         _buildHomeButton("Generate Code", Icons.code_outlined, "Sky Coder", Colors.blue),
@@ -1712,7 +1633,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+              children:[
                 Icon(icon, color: color, size: 28),
                 const SizedBox(height: 12),
                 Text(title, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
@@ -1734,13 +1655,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       padding: EdgeInsets.fromLTRB(16, 8, 16, MediaQuery.of(context).padding.bottom + 8),
       decoration: BoxDecoration(
         color: Colors.white,
-        boxShadow: [
+        boxShadow:[
           BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 10, offset: const Offset(0, -4))
         ],
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
+        children:[
           // Plus Button (Attach)
           if (_showPlusIcon)
             Container(
@@ -1767,7 +1688,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
+                children:[
                   // THE PILL (Model / Image Indicator)
                   if (showPill)
                      Padding(
@@ -1780,7 +1701,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                     padding: const EdgeInsets.only(left: 4, right: 4),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
+                      children:[
                          Expanded(
                            child: TextField(
                              controller: _promptController,
@@ -1842,14 +1763,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         color: Colors.white,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: Colors.grey[300]!),
-        boxShadow: [
+        boxShadow:[
            BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 4, offset: const Offset(0,2))
         ]
       ),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       child: Row(
         mainAxisSize: MainAxisSize.min,
-        children: [
+        children:[
           // Icon or Image Thumb
           if (_pickedImage != null)
              GestureDetector(
@@ -1865,7 +1786,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                child: ClipRRect(
                  borderRadius: BorderRadius.circular(6),
                  child: Stack(
-                    children: [
+                    children:[
                       Image.file(_pickedImage!, width: 40, height: 40, fit: BoxFit.cover),
                       if (_isUploadingImage)
                         const Positioned.fill(child: ColoredBox(color: Colors.black45, child: Center(child: SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))))),
@@ -1940,11 +1861,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               decoration: BoxDecoration(
                 color: Colors.black87,
                 borderRadius: BorderRadius.circular(8),
-                boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 10)],
+                boxShadow:[BoxShadow(color: Colors.black26, blurRadius: 10)],
               ),
               child: const Row(
                 mainAxisSize: MainAxisSize.min,
-                children: [
+                children:[
                   Icon(Icons.copy, color: Colors.white, size: 16),
                   SizedBox(width: 8),
                   Text("Copy", style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
@@ -2003,7 +1924,7 @@ class ChatBubble extends StatelessWidget {
         child: Row(
           mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+          children:[
             Flexible(
               child: isUser 
                 ? _buildUserMessage(context) 
@@ -2018,7 +1939,7 @@ class ChatBubble extends StatelessWidget {
   Widget _buildUserMessage(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
+      children:[
         if (message.attachedImageUrl != null)
            Padding(
              padding: const EdgeInsets.only(bottom: 8),
@@ -2069,10 +1990,10 @@ class ChatBubble extends StatelessWidget {
     
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
+      children:[
         // HEADER ROW (Icon + Name + Dots + TTS)
         Row(
-           children: [
+           children:[
              const SizedBox(width: 4),
              Container(
                width: 26, height: 26,
@@ -2128,7 +2049,7 @@ class ChatBubble extends StatelessWidget {
           padding: const EdgeInsets.only(left: 4), // Minimal padding to align with Icon flow
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+            children:[
               // 1. Image Result
               if (message.status == GenStatus.generating && message.modelName!.contains("Img"))
                  _buildShimmerPlaceholder()
@@ -2219,10 +2140,10 @@ class ChatBubble extends StatelessWidget {
       width: 250, height: 250, 
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(12),
-        boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 6)],
+        boxShadow:[BoxShadow(color: Colors.black12, blurRadius: 6)],
       ),
       child: Stack(
-        children: [
+        children:[
           GestureDetector(
             onTap: () => Navigator.push(context, MaterialPageRoute(
               builder: (_) => FullScreenViewer(
@@ -2263,7 +2184,7 @@ class ChatBubble extends StatelessWidget {
       ),
       child: Stack(
         alignment: Alignment.center,
-        children: [
+        children:[
           const Icon(Icons.movie_creation_outlined, size: 60, color: Colors.white24),
           
           GestureDetector(
@@ -2331,17 +2252,17 @@ class _MusicCardState extends State<MusicCard> {
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.grey[200]!),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 5)],
+        boxShadow:[BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 5)],
       ),
       child: Column(
-        children: [
+        children:[
           Row(
-            children: [
+            children:[
               GestureDetector(
                 onTap: _togglePlay,
                 child: Stack(
                   alignment: Alignment.center,
-                  children: [
+                  children:[
                     ClipRRect(
                       borderRadius: BorderRadius.circular(8),
                       child: CachedNetworkImage(
@@ -2585,7 +2506,7 @@ class _FullScreenViewerState extends State<FullScreenViewer> {
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
-        children: [
+        children:[
           Center(
             child: _isVideo
                 ? (_chewieController != null && _chewieController!.videoPlayerController.value.isInitialized
@@ -2601,7 +2522,7 @@ class _FullScreenViewerState extends State<FullScreenViewer> {
           Positioned(
             top: 40, right: 20,
             child: Row(
-              children: [
+              children:[
                 if (!widget.hideActions && !widget.isLocal)
                   _circleBtn(Icons.chat_bubble, () => widget.onGoToChat(displayUrl)),
                 if (!widget.hideActions) 
@@ -2658,7 +2579,7 @@ class MyStuffPage extends StatelessWidget {
                builder: (_) => FullScreenViewer(item: item, onToast: onToast, onGoToChat: onGoToChat))),
             child: Stack(
               fit: StackFit.expand,
-              children: [
+              children:[
                 ClipRRect(
                   borderRadius: BorderRadius.circular(4),
                   child: isVideo && thumb != null
@@ -2715,7 +2636,7 @@ class CodeBlockBuilder extends MarkdownElementBuilder {
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
-        children: [
+        children:[
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: const BoxDecoration(
@@ -2724,7 +2645,7 @@ class CodeBlockBuilder extends MarkdownElementBuilder {
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
+              children:[
                 Text(language.toUpperCase(), style: const TextStyle(color: Colors.grey, fontSize: 10)),
                 GestureDetector(
                   onTap: () {
@@ -2732,7 +2653,7 @@ class CodeBlockBuilder extends MarkdownElementBuilder {
                     onToast("Code copied");
                   },
                   child: const Row(
-                    children: [Icon(Icons.copy, color: Colors.grey, size: 12), SizedBox(width: 4), Text("Copy", style: TextStyle(color: Colors.grey, fontSize: 10))],
+                    children:[Icon(Icons.copy, color: Colors.grey, size: 12), SizedBox(width: 4), Text("Copy", style: TextStyle(color: Colors.grey, fontSize: 10))],
                   ),
                 )
               ],
