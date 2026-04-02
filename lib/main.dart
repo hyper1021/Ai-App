@@ -70,7 +70,7 @@ enum GenStatus { waiting, generating, streaming, completed, error, stopped }
 
 class ChatMessage {
   final String id;
-  final String text;
+  String text; // FIX: Removed 'final' so the text can be updated during streaming
   String visibleText;
   final MessageType type;
   List<String>? attachedImageUrls; 
