@@ -1,3 +1,4 @@
+// ignore_for_file: deprecated_member_use
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -13,10 +14,9 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-// ══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 // 1. ENTRY POINT
-// ══════════════════════════════════════════════════════════════
-
+// ═══════════════════════════════════════════════════
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations(
@@ -24,25 +24,18 @@ void main() {
   runApp(const SkyGenApp());
 }
 
-// ══════════════════════════════════════════════════════════════
-// 2. THEME NOTIFIER
-// ══════════════════════════════════════════════════════════════
-
+// ═══════════════════════════════════════════════════
+// 2. THEME
+// ═══════════════════════════════════════════════════
 class ThemeNotifier extends ChangeNotifier {
   bool _dark = false;
   bool get isDark => _dark;
   void toggle() { _dark = !_dark; notifyListeners(); }
 }
-
 final themeNotifier = ThemeNotifier();
-
-// ══════════════════════════════════════════════════════════════
-// 3. COLOURS
-// ══════════════════════════════════════════════════════════════
 
 class C {
   static bool dark = false;
-
   static Color get bg      => dark ? const Color(0xFF0F1117) : const Color(0xFFF5F5F7);
   static Color get card    => dark ? const Color(0xFF1A1D27) : const Color(0xFFFFFFFF);
   static Color get accent  => const Color(0xFF5B6FF2);
@@ -57,14 +50,18 @@ class C {
   static const grad2 = Color(0xFF8B5CF6);
 }
 
+// ═══════════════════════════════════════════════════
+// 3. CONSTANTS
+// ═══════════════════════════════════════════════════
 const String kLogoUrl  = 'https://www.cdn.hyper-bd.site/photo/logo.png';
+const String kDevUrl   = 'https://www.cdn.hyper-bd.site/photo/dev.png';
 const String kImgBBKey = '4685fa1e1d227aec0ce07733cd571ff9';
 const String kDevTg    = 'https://t.me/BD_Prime_Minister';
+const String kDevWa    = 'https://wa.me/8801761844968';
 
-// ══════════════════════════════════════════════════════════════
-// 4. DATA MODELS
-// ══════════════════════════════════════════════════════════════
-
+// ═══════════════════════════════════════════════════
+// 4. MODELS
+// ═══════════════════════════════════════════════════
 enum MsgType   { user, ai }
 enum GenStatus { waiting, streaming, completed, error, stopped }
 
@@ -76,7 +73,6 @@ class PendingImage {
   String? description;
   bool isLoading;
   bool isError;
-
   PendingImage({required this.file, required this.localSrc,
       this.isLoading = true, this.isError = false});
 }
@@ -103,7 +99,6 @@ class ChatMsg {
     'type': type.index, 'imgUrls': imgUrls, 'status': status.index,
     'ts': ts, 'liked': liked, 'disliked': disliked,
   };
-
   factory ChatMsg.fromMap(Map<String, dynamic> m) => ChatMsg(
     id: m['id'], text: m['text'], visibleText: m['visibleText'],
     type: MsgType.values[m['type']],
@@ -119,7 +114,7 @@ class Session {
   final int createdAt;
   bool isPinned;
   List<ChatMsg> messages;
-  bool titleGenerated; // track if AI title was already generated
+  bool titleGenerated;
 
   Session({
     required this.id, required this.title, required this.createdAt,
@@ -131,7 +126,6 @@ class Session {
     'isPinned': isPinned, 'titleGenerated': titleGenerated,
     'messages': messages.map((m) => m.toMap()).toList(),
   };
-
   factory Session.fromMap(Map<String, dynamic> m) => Session(
     id: m['id'], title: m['title'], createdAt: m['createdAt'],
     isPinned: m['isPinned'] ?? false,
@@ -140,10 +134,47 @@ class Session {
   );
 }
 
-// ══════════════════════════════════════════════════════════════
-// 5. ROOT APP
-// ══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+// 5. TTS CACHE (in-memory + disk)
+// ═══════════════════════════════════════════════════
+class TtsCache {
+  static final Map<String, String> _mem = {};
+  static Directory? _dir;
 
+  static Future<void> init() async {
+    final base = await getApplicationDocumentsDirectory();
+    _dir = Directory('${base.path}/tts_cache');
+    if (!await _dir!.exists()) await _dir!.create(recursive: true);
+  }
+
+  static String _key(String text) =>
+      text.hashCode.toRadixString(16).padLeft(8, '0');
+
+  static Future<String?> get(String text) async {
+    final k = _key(text);
+    if (_mem.containsKey(k)) return _mem[k];
+    if (_dir == null) return null;
+    final f = File('${_dir!.path}/$k.mp3');
+    if (await f.exists()) {
+      _mem[k] = f.path;
+      return f.path;
+    }
+    return null;
+  }
+
+  static Future<String> store(String text, List<int> bytes) async {
+    final k = _key(text);
+    if (_dir == null) await init();
+    final f = File('${_dir!.path}/$k.mp3');
+    await f.writeAsBytes(bytes);
+    _mem[k] = f.path;
+    return f.path;
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// 6. ROOT APP
+// ═══════════════════════════════════════════════════
 class SkyGenApp extends StatefulWidget {
   const SkyGenApp({super.key});
   @override
@@ -154,80 +185,117 @@ class _SkyGenAppState extends State<SkyGenApp> {
   @override
   void initState() {
     super.initState();
+    TtsCache.init();
     themeNotifier.addListener(() => setState(() { C.dark = themeNotifier.isDark; }));
   }
 
   @override
   Widget build(BuildContext context) {
     C.dark = themeNotifier.isDark;
-    final brightness = themeNotifier.isDark ? Brightness.dark : Brightness.light;
     SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
-      statusBarIconBrightness: themeNotifier.isDark ? Brightness.light : Brightness.dark,
+      statusBarIconBrightness: C.dark ? Brightness.light : Brightness.dark,
       systemNavigationBarColor: C.bg,
-      systemNavigationBarIconBrightness: themeNotifier.isDark ? Brightness.light : Brightness.dark,
+      systemNavigationBarIconBrightness: C.dark ? Brightness.light : Brightness.dark,
     ));
+    final brightness = C.dark ? Brightness.dark : Brightness.light;
     return MaterialApp(
       title: 'SkyGen',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        useMaterial3: true,
-        brightness: brightness,
-        scaffoldBackgroundColor: C.bg,
-        primaryColor: C.accent,
+        useMaterial3: true, brightness: brightness,
+        scaffoldBackgroundColor: C.bg, primaryColor: C.accent,
         fontFamily: 'Roboto',
-        colorScheme: ColorScheme.fromSeed(
-            seedColor: C.accent, brightness: brightness),
+        colorScheme: ColorScheme.fromSeed(seedColor: C.accent, brightness: brightness),
       ),
       home: const SplashScreen(),
     );
   }
 }
 
-// ══════════════════════════════════════════════════════════════
-// 6. SPLASH SCREEN
-// ══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+// 7. REUSABLE LOGO CIRCLE
+// ═══════════════════════════════════════════════════
+class _LogoCircle extends StatelessWidget {
+  final double size;
+  final String url;
+  const _LogoCircle({required this.size, this.url = kLogoUrl});
 
+  @override
+  Widget build(BuildContext context) {
+    return ClipOval(
+      child: CachedNetworkImage(
+        imageUrl: url, width: size, height: size, fit: BoxFit.cover,
+        placeholder: (_, __) => Container(
+          width: size, height: size,
+          decoration: const BoxDecoration(
+              gradient: LinearGradient(colors: [C.grad1, C.grad2]), shape: BoxShape.circle),
+          child: Icon(Icons.person_rounded, color: Colors.white, size: size * 0.5),
+        ),
+        errorWidget: (_, __, ___) => Container(
+          width: size, height: size,
+          decoration: const BoxDecoration(
+              gradient: LinearGradient(colors: [C.grad1, C.grad2]), shape: BoxShape.circle),
+          child: Icon(Icons.school_rounded, color: Colors.white, size: size * 0.48),
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// 8. SPLASH SCREEN  (improved animation)
+// ═══════════════════════════════════════════════════
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
   @override
   State<SplashScreen> createState() => _SplashState();
 }
 
-class _SplashState extends State<SplashScreen>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _ctrl;
-  late Animation<double> _scale, _glow, _fade;
+class _SplashState extends State<SplashScreen> with TickerProviderStateMixin {
+  late AnimationController _logoCtrl, _ringCtrl, _textCtrl;
+  late Animation<double> _logoScale, _logoFade, _ringScale, _ringOpacity, _textFade;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       precacheImage(const NetworkImage(kLogoUrl), context);
+      precacheImage(const NetworkImage(kDevUrl), context);
     });
-    _ctrl = AnimationController(vsync: this,
-        duration: const Duration(milliseconds: 2200));
-    _scale = Tween(begin: 0.65, end: 1.0).animate(CurvedAnimation(
-        parent: _ctrl, curve: const Interval(0.0, 0.55, curve: Curves.elasticOut)));
-    _glow = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(
-        parent: _ctrl, curve: const Interval(0.3, 0.85, curve: Curves.easeOut)));
-    _fade = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(
-        parent: _ctrl, curve: const Interval(0.0, 0.35, curve: Curves.easeIn)));
-    _ctrl.forward();
-    Future.delayed(const Duration(milliseconds: 2700), () {
-      if (mounted) {
-        Navigator.of(context).pushReplacement(PageRouteBuilder(
-          pageBuilder: (_, __, ___) => const ChatScreen(),
-          transitionsBuilder: (_, a, __, child) =>
-              FadeTransition(opacity: a, child: child),
-          transitionDuration: const Duration(milliseconds: 450),
-        ));
-      }
+
+    _logoCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
+    _ringCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1800))..repeat();
+    _textCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
+
+    _logoScale   = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: _logoCtrl, curve: Curves.elasticOut));
+    _logoFade    = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: _logoCtrl, curve: const Interval(0.0, 0.4)));
+    _ringScale   = Tween(begin: 0.8, end: 1.6).animate(CurvedAnimation(parent: _ringCtrl, curve: Curves.easeOut));
+    _ringOpacity = Tween(begin: 0.6, end: 0.0).animate(CurvedAnimation(parent: _ringCtrl, curve: Curves.easeOut));
+    _textFade    = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: _textCtrl, curve: Curves.easeIn));
+
+    _logoCtrl.forward().then((_) {
+      _textCtrl.forward();
+      Future.delayed(const Duration(milliseconds: 1200), () {
+        if (mounted) {
+          _ringCtrl.dispose();
+          Navigator.of(context).pushReplacement(PageRouteBuilder(
+            pageBuilder: (_, __, ___) => const ChatScreen(),
+            transitionsBuilder: (_, a, __, child) => FadeTransition(opacity: a, child: child),
+            transitionDuration: const Duration(milliseconds: 500),
+          ));
+        }
+      });
     });
   }
 
   @override
-  void dispose() { _ctrl.dispose(); super.dispose(); }
+  void dispose() {
+    _logoCtrl.dispose();
+    if (_ringCtrl.isAnimating) _ringCtrl.dispose();
+    _textCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -235,69 +303,77 @@ class _SplashState extends State<SplashScreen>
       backgroundColor: C.bg,
       body: Center(
         child: AnimatedBuilder(
-          animation: _ctrl,
-          builder: (_, __) => FadeTransition(
-            opacity: _fade,
-            child: Transform.scale(
-              scale: _scale.value,
+          animation: Listenable.merge([_logoCtrl, _ringCtrl, _textCtrl]),
+          builder: (_, __) => Column(mainAxisSize: MainAxisSize.min, children: [
+            SizedBox(width: 160, height: 160,
               child: Stack(alignment: Alignment.center, children: [
-                for (int i = 0; i < 3; i++)
-                  Opacity(
-                    opacity: (_glow.value * (0.38 - i * 0.11)).clamp(0, 1.0),
-                    child: Container(
-                      width: 90.0 + i * 38, height: 90.0 + i * 38,
+                // Pulsing ring
+                Transform.scale(
+                  scale: _ringScale.value,
+                  child: Opacity(
+                    opacity: _ringOpacity.value,
+                    child: Container(width: 100, height: 100,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        border: Border.all(
-                            color: C.accent.withOpacity(0.55 - i * 0.14),
-                            width: 1.5),
+                        border: Border.all(color: C.accent, width: 2),
                       ),
                     ),
                   ),
-                _LogoCircle(size: 78),
+                ),
+                // Second ring offset
+                Transform.scale(
+                  scale: (_ringScale.value * 0.7).clamp(0.0, 2.0),
+                  child: Opacity(
+                    opacity: (_ringOpacity.value * 0.5).clamp(0.0, 1.0),
+                    child: Container(width: 120, height: 120,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(color: C.grad2, width: 1.5),
+                      ),
+                    ),
+                  ),
+                ),
+                // Logo
+                FadeTransition(
+                  opacity: _logoFade,
+                  child: Transform.scale(
+                    scale: _logoScale.value,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        boxShadow: [BoxShadow(
+                          color: C.accent.withOpacity(0.4),
+                          blurRadius: 24, spreadRadius: 2,
+                        )],
+                      ),
+                      child: _LogoCircle(size: 88),
+                    ),
+                  ),
+                ),
               ]),
             ),
-          ),
+            const SizedBox(height: 20),
+            FadeTransition(
+              opacity: _textFade,
+              child: Column(children: [
+                Text('SkyGen', style: TextStyle(
+                    fontSize: 26, fontWeight: FontWeight.w800,
+                    color: C.ink, letterSpacing: -0.5)),
+                const SizedBox(height: 4),
+                Text('English AI Tutor', style: TextStyle(
+                    fontSize: 13, color: C.ink2, fontWeight: FontWeight.w500)),
+              ]),
+            ),
+          ]),
         ),
       ),
     );
   }
 }
 
-// ══════════════════════════════════════════════════════════════
-// 7. LOGO WIDGET (reusable circular logo)
-// ══════════════════════════════════════════════════════════════
-
-class _LogoCircle extends StatelessWidget {
-  final double size;
-  const _LogoCircle({required this.size});
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipOval(
-      child: CachedNetworkImage(
-        imageUrl: kLogoUrl, width: size, height: size, fit: BoxFit.cover,
-        placeholder: (_, __) => Container(
-          width: size, height: size,
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(colors: [C.grad1, C.grad2]), shape: BoxShape.circle),
-          child: Icon(Icons.school_rounded, color: Colors.white, size: size * 0.48),
-        ),
-        errorWidget: (_, __, ___) => Container(
-          width: size, height: size,
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(colors: [C.grad1, C.grad2]), shape: BoxShape.circle),
-          child: Icon(Icons.school_rounded, color: Colors.white, size: size * 0.48),
-        ),
-      ),
-    );
-  }
-}
-
-// ══════════════════════════════════════════════════════════════
-// 8. CHAT SCREEN
-// ══════════════════════════════════════════════════════════════
-
+// ═══════════════════════════════════════════════════
+// 9. CHAT SCREEN
+// ═══════════════════════════════════════════════════
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
   @override
@@ -317,14 +393,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   bool    _stopRequested    = false;
   File?   _storageFile;
   File?   _memoryFile;
-
   List<PendingImage> _pendingImages = [];
 
   // TTS
-  final AudioPlayer _ttsPlayer = AudioPlayer();
-  List<String> _ttsQueue       = [];
-  bool  _isPlayingTTS          = false;
-  bool  _isTTSLoading          = false;
+  final AudioPlayer _ttsPlayer  = AudioPlayer();
+  List<String>      _ttsQueue   = [];   // file paths ready to play
+  List<String>      _ttsPending = [];   // text chunks being fetched
+  bool   _isPlayingTTS          = false;
+  bool   _isTTSLoading          = false;
   String? _speakingId;
 
   // Scroll FAB
@@ -332,85 +408,73 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   // AI Memory
   List<String> _aiMemory = [];
-
-  // Drawer search
   String _searchQuery = '';
 
-  // ── SYSTEM PROMPT ────────────────────────────────────────
-  final String _sysBase = r"""
-You are "SkyGen" — a smart, friendly English language tutor and AI assistant for Bangladeshi students. You were created by MD. Jaid Bin Siyam, developer at Hyper Squad. Only reveal this when the user explicitly asks who made you.
+  // Input has content?
+  bool get _canSend {
+    final hasText = _inputCtrl.text.trim().isNotEmpty;
+    final hasImg  = _pendingImages.isNotEmpty && !_pendingImages.any((p) => p.isLoading);
+    return (hasText || hasImg) && !_isGenerating;
+  }
 
-════ RESPONSE LENGTH RULES ════
-• Greetings (Hi, Hello, How are you, etc.) → reply SHORT, 1-2 sentences max. Use friendly emojis. 🙂
-• Simple yes/no questions → answer briefly.
-• Questions about topics (tenses, grammar, vocabulary, etc.) → give COMPLETE, PROPER answers with all relevant details, subtypes, examples. Do NOT cut short.
-• Translation requests → translate only, nothing extra.
-• Writing tasks (essays, letters) → write the full content requested.
-• RULE: Match response length to what the question actually needs. Never over-explain, never under-explain.
+  // ── SYSTEM PROMPT ──────────────────────────────
+  final String _sysBase = r"""
+You are "SkyGen" — a smart, friendly English language tutor and AI assistant for Bangladeshi students. Created by MD. Jaid Bin Siyam (Hyper Squad). Reveal creator only when user explicitly asks.
+
+════ FORMATTING & RESPONSE STYLE ════
+• Always structure responses clearly. Use bullet points, numbered lists, bold headers where helpful.
+• Educational answers: use **bold** for key terms, proper headings, clear examples.
+• Tables: use markdown tables for comparisons or structured data.
+• Keep responses well-organized and easy to scan — not walls of text.
+• Greetings (Hi/Hello/How are you) → 1-2 sentences, friendly emojis. 🙂
+• Questions (grammar, tenses, vocabulary) → COMPLETE answer with ALL subtypes, rules, examples. Never cut short.
+• Translation → translate ONLY, no commentary.
+• Writing tasks → full content.
+• Always match length to what the question needs.
 
 ════ EMOJI USAGE ════
-• Use relevant emojis naturally in responses to make them engaging. 😊📚✏️
-• Greetings: always use emojis.
-• Educational content: use sparingly for headers/points.
-• Don't overdo it.
+• Greetings: always use 1-2 emojis.
+• Educational: use emojis for section headers sparingly (📌 ✏️ 📚 💡).
+• Avoid overusing.
 
 ════ LANGUAGE RULES ════
-• ALWAYS mirror the user's language exactly:
-  - Bengali → reply in Bengali
-  - English → reply in English
-  - Banglish → reply in Banglish
-• Natural Bengali can include English terms (like grammar terms: Present Tense, Noun, etc.)
+• Mirror user's language exactly: Bengali→Bengali, English→English, Banglish→Banglish.
 • Grammar terms always in English regardless of reply language.
+• Bengali responses may naturally include English grammar terms.
 
-════ TITLE GENERATION (FIRST MESSAGE ONLY) ════
-ONLY when this tag is present in the instructions: [GENERATE_TITLE]
-Add at the very END of your response (after all content):
-<<<TITLE: Your title here>>>
-Title: 10–100 characters, relevant to the topic.
-NEVER generate a title unless [GENERATE_TITLE] is explicitly in the instruction.
+════ TITLE GENERATION ════
+ONLY when [GENERATE_TITLE] tag is in instruction:
+Add at very END: <<<TITLE: Short meaningful title>>>
+Title: 3–6 words, concise, relevant. Professional. NEVER generate unless tag present.
 
 ════ MEMORY SYSTEM ════
-If the user shares personally useful long-term info (class, name, age, goals, native language), add at the END of your response:
-<<<MEMORY: ["fact 1", "fact 2"]>>>
-Only save genuinely important facts. Keep concise. Never mention you're saving memory to the user.
+If user shares important personal info (name, class, age, goals, learning level):
+Add at END: <<<MEMORY: ["single clear fact"]>>>
+Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One fact at a time unless truly multiple distinct facts exist. Never tell user you're saving memory.
 
-════ WHAT YOU HELP WITH ════
-① Grammar — All 12 tenses (with structure, rules, all subtypes, examples), Parts of Speech, Voice, Narration, Transformation, Articles, Punctuation, Spelling.
-② Vocabulary — Meanings, synonyms, antonyms, idioms, phrasal verbs, confusing words.
-③ Translation — Any language pair the user asks for. Translate only.
-④ Writing — Essays, letters, applications, dialogues, CV, summaries, reports.
-⑤ Comprehension — Passages, main idea, tone, inference.
-⑥ SSC/HSC Prep — Board exam questions, fill-in-blanks, cloze, model questions.
-⑦ Image Help — Analyze text/content from uploaded images.
-⑧ Spoken English — Daily phrases, formal intro, pronunciation tips.
-
-════ IDENTITY ════
-Name: SkyGen | Creator: MD. Jaid Bin Siyam (Hyper Squad) | Reveal only when asked.
+════ SUBJECTS ════
+① Grammar — All 12 tenses with full structure, rules, subtypes, examples
+② Vocabulary — meanings, synonyms, antonyms, idioms, phrasal verbs
+③ Translation — any language pair, translate only
+④ Writing — essays, letters, applications, CV, summaries
+⑤ Comprehension — passages, main idea, inference
+⑥ SSC/HSC Prep — board exam formats, model questions
+⑦ Images — analyze text/content from uploaded images
+⑧ Spoken English — daily phrases, pronunciation tips
 
 ════ OFF-TOPIC ════
-Non-English topics: "I can only help with English learning! 📚 Ask me anything about English."
+"I can only help with English learning! 📚 What would you like to learn today?"
 """;
 
-  String _buildSystemInstruction({bool needTitle = false}) {
+  String _buildSysInstruction({bool needTitle = false}) {
     String full = _sysBase;
-    if (needTitle) {
-      full += '\n\n[GENERATE_TITLE] — Add <<<TITLE: ...>>> at the end of your response.';
-    }
+    if (needTitle) full += '\n\n[GENERATE_TITLE] — Add <<<TITLE: ...>>> at end of response.';
     if (_aiMemory.isNotEmpty) {
-      full += '\n\n════ USER MEMORY (Always use this context) ════\n';
-      for (int i = 0; i < _aiMemory.length; i++) {
-        full += '• ${_aiMemory[i]}\n';
-      }
+      full += '\n\n════ LONG-TERM USER MEMORY ════\n(Use this to personalize responses)\n';
+      for (final m in _aiMemory) full += '• $m\n';
     }
     return full;
   }
-
-  final List<Map<String, dynamic>> _quickCards = [
-    {'icon': Icons.auto_fix_high_rounded, 'label': 'Grammar Check',  'color': C.grad1},
-    {'icon': Icons.translate_rounded,     'label': 'Translation',    'color': C.green},
-    {'icon': Icons.school_rounded,        'label': 'Learn Tenses',   'color': Color(0xFFF59E0B)},
-    {'icon': Icons.edit_note_rounded,     'label': 'Essay Writing',  'color': C.red},
-  ];
 
   @override
   void initState() {
@@ -418,6 +482,7 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
     _initStorage();
     _ttsPlayer.onPlayerComplete.listen((_) => _playNextTTS());
     _scrollCtrl.addListener(_onScroll);
+    _inputCtrl.addListener(() => setState(() {}));
     themeNotifier.addListener(() => setState(() {}));
   }
 
@@ -433,18 +498,17 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
 
   void _onScroll() {
     if (!_scrollCtrl.hasClients) return;
-    final distFromBottom =
-        _scrollCtrl.position.maxScrollExtent - _scrollCtrl.position.pixels;
-    final show = distFromBottom > 200;
+    final dist = _scrollCtrl.position.maxScrollExtent - _scrollCtrl.position.pixels;
+    final show = dist > 200;
     if (show != _showScrollFab) setState(() => _showScrollFab = show);
   }
 
-  // ── Storage ──────────────────────────────────────────────
+  // ── Storage ──────────────────────────────────────
   Future<void> _initStorage() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      _storageFile = File('${dir.path}/skygen_v5.json');
-      _memoryFile  = File('${dir.path}/skygen_memory.json');
+      _storageFile = File('${dir.path}/skygen_v6.json');
+      _memoryFile  = File('${dir.path}/skygen_mem_v2.json');
       if (await _storageFile!.exists()) {
         final raw = await _storageFile!.readAsString();
         final d   = jsonDecode(raw);
@@ -472,16 +536,18 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
 
   Future<void> _saveMemory() async {
     if (_memoryFile == null) return;
-    try {
-      await _memoryFile!.writeAsString(jsonEncode({'memory': _aiMemory}));
-    } catch (_) {}
+    try { await _memoryFile!.writeAsString(jsonEncode({'memory': _aiMemory})); } catch (_) {}
   }
 
   void _addToMemory(List<String> items) {
     for (final item in items) {
-      if (item.isNotEmpty && !_aiMemory.contains(item)) _aiMemory.add(item);
+      final trimmed = item.trim();
+      if (trimmed.length >= 20 && !_aiMemory.contains(trimmed)) {
+        _aiMemory.add(trimmed.length > 200 ? trimmed.substring(0, 200) : trimmed);
+      }
     }
     if (_aiMemory.length > 10) _aiMemory = _aiMemory.sublist(_aiMemory.length - 10);
+    setState(() {});
     _saveMemory();
   }
 
@@ -534,31 +600,33 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
               : Session(id: _currentId, title: 'New Chat',
                   createdAt: DateTime.now().millisecondsSinceEpoch, messages: []));
 
-  // ── Image Upload (ImgBB) ─────────────────────────────────
-  Future<void> _pickImages() async {
-    if (_pendingImages.length >= 3) {
-      _showToast('Maximum 3 images allowed.');
-      return;
-    }
+  // ── Network check ─────────────────────────────────
+  Future<bool> _hasInternet() async {
     try {
-      final picker = ImagePicker();
-      final files  = await picker.pickMultiImage();
+      final r = await http.get(Uri.parse('https://www.google.com'))
+          .timeout(const Duration(seconds: 5));
+      return r.statusCode == 200;
+    } catch (_) { return false; }
+  }
+
+  // ── Image upload (ImgBB) ──────────────────────────
+  Future<void> _pickImages() async {
+    if (_pendingImages.length >= 3) { _showToast('Maximum 3 images allowed.'); return; }
+    try {
+      final files = await ImagePicker().pickMultiImage();
       if (files.isEmpty) return;
-      final slots  = 3 - _pendingImages.length;
-      for (final xf in files.take(slots)) {
-        final pending = PendingImage(file: File(xf.path), localSrc: xf.path);
-        setState(() => _pendingImages.add(pending));
-        _uploadAndAnalyze(pending);
+      for (final xf in files.take(3 - _pendingImages.length)) {
+        final p = PendingImage(file: File(xf.path), localSrc: xf.path);
+        setState(() => _pendingImages.add(p));
+        _uploadAndAnalyze(p);
       }
-    } catch (e) {
-      _showToast('Error picking image: $e');
-    }
+    } catch (e) { _showToast('Error: $e'); }
   }
 
   Future<void> _uploadAndAnalyze(PendingImage p) async {
     try {
-      final uri = Uri.parse('https://api.imgbb.com/1/upload?key=$kImgBBKey');
-      final req = http.MultipartRequest('POST', uri);
+      final req = http.MultipartRequest(
+          'POST', Uri.parse('https://api.imgbb.com/1/upload?key=$kImgBBKey'));
       req.files.add(await http.MultipartFile.fromPath('image', p.file.path));
       final res  = await req.send();
       if (res.statusCode == 200) {
@@ -571,7 +639,6 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
           return;
         }
       }
-      // Upload failed
       if (mounted) setState(() { p.isLoading = false; p.isError = true; });
     } catch (_) {
       if (mounted) setState(() { p.isLoading = false; p.isError = true; });
@@ -592,8 +659,8 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
 
   Future<void> _fetchDesc(PendingImage p) async {
     try {
-      final r = await http.get(
-          Uri.parse('https://gen-z-describer.vercel.app/api?url=${p.uploadedUrl}'));
+      final r = await http.get(Uri.parse(
+          'https://gen-z-describer.vercel.app/api?url=${p.uploadedUrl}'));
       if (r.statusCode == 200) {
         final d = jsonDecode(r.body);
         if (d['ok'] == true) p.description = d['results']['description'] as String?;
@@ -601,14 +668,13 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
     } catch (_) {}
   }
 
-  // ── Send ─────────────────────────────────────────────────
+  // ── Send ──────────────────────────────────────────
   Future<void> _send() async {
     if (_isGenerating) return;
     final prompt = _inputCtrl.text.trim();
     if (prompt.isEmpty && _pendingImages.isEmpty) return;
     if (_pendingImages.any((p) => p.isLoading)) {
-      _showToast('Images are still uploading, please wait…');
-      return;
+      _showToast('Images still uploading…'); return;
     }
 
     setState(() => _isGenerating = true);
@@ -616,32 +682,22 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
     _inputCtrl.clear();
     setState(() => _pendingImages.clear());
 
-    // Determine if this is first message (need title)
     final isFirst = _isTempSession;
-
     if (_isTempSession) {
-      final sess = Session(id: _currentId, title: 'New Chat',
+      final s = Session(id: _currentId, title: 'New Chat',
           createdAt: DateTime.now().millisecondsSinceEpoch, messages: []);
-      setState(() {
-        _sessions.insert(0, sess);
-        _isTempSession = false;
-        _sortSessions();
-      });
+      setState(() { _sessions.insert(0, s); _isTempSession = false; _sortSessions(); });
     }
 
-    // Only successful uploads
-    final imgUrls = imgs
-        .where((i) => i.uploadedUrl != null && !i.isError)
-        .map((i) => i.uploadedUrl!)
-        .toList();
+    final imgUrls = imgs.where((i) => i.uploadedUrl != null && !i.isError)
+        .map((i) => i.uploadedUrl!).toList();
 
     final userMsg = ChatMsg(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      id: '${DateTime.now().millisecondsSinceEpoch}',
       text: prompt, type: MsgType.user,
       imgUrls: imgUrls.isNotEmpty ? imgUrls : null,
       ts: DateTime.now().millisecondsSinceEpoch,
     );
-
     final sess = _sessions.firstWhere((s) => s.id == _currentId);
     setState(() { sess.messages.add(userMsg); _stopRequested = false; });
     _scrollToBot(force: true);
@@ -650,16 +706,14 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
     await _streamAI(prompt, imgs, sess: sess, isFirst: isFirst);
   }
 
-  String _buildPrompt(String userPrompt, List<PendingImage> imgs,
-      {required bool needTitle}) {
+  String _buildPrompt(String userPrompt, List<PendingImage> imgs, {required bool needTitle}) {
     String imgCtx = '';
     for (int i = 0; i < imgs.length; i++) {
       if (imgs[i].uploadedUrl == null || imgs[i].isError) continue;
-      imgCtx += '\n[Image ${i + 1}]\n';
+      imgCtx += '\n[Image ${i+1}]\n';
       if (imgs[i].ocrText?.isNotEmpty == true) imgCtx += '  OCR: ${imgs[i].ocrText}\n';
       if (imgs[i].description?.isNotEmpty == true) imgCtx += '  Visual: ${imgs[i].description}\n';
     }
-
     final sess  = _sessions.firstWhere((s) => s.id == _currentId);
     final msgs  = sess.messages;
     String hist = '';
@@ -670,31 +724,47 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
         hist += '${m.type == MsgType.user ? "User" : "AI"}: ${m.text}\n';
       }
     }
-
-    String full = '[System Instruction]\n${_buildSystemInstruction(needTitle: needTitle)}\n\n';
-    if (hist.isNotEmpty)   full += '[Chat History]\n$hist\n';
+    String full = '[System]\n${_buildSysInstruction(needTitle: needTitle)}\n\n';
+    if (hist.isNotEmpty)   full += '[History]\n$hist\n';
     if (imgCtx.isNotEmpty) full += '[Images]\n$imgCtx\n';
-    full += '[User Message]\nUser: ${userPrompt.isEmpty ? "(Image sent)" : userPrompt}';
+    full += '[User]: ${userPrompt.isEmpty ? "(image sent)" : userPrompt}';
     return full;
   }
 
   Future<void> _streamAI(String prompt, List<PendingImage> imgs,
       {required Session sess, required bool isFirst}) async {
-    // needTitle only on first message and title not yet generated
     final needTitle = isFirst && !sess.titleGenerated;
-
     final aiId = 'ai${DateTime.now().millisecondsSinceEpoch}';
     _addAiMsg(aiId, '', GenStatus.waiting);
 
     try {
-      final fullPrompt = _buildPrompt(prompt, imgs, needTitle: needTitle);
+      // Check internet first
+      if (!await _hasInternet()) {
+        _updateStatus(aiId, GenStatus.error,
+            text: '⚠️ No internet connection. Please check your network and try again.');
+        return;
+      }
+
       final client = http.Client();
       final req    = http.Request('POST', Uri.parse('https://www.api.hyper-bd.site/Ai/'));
       req.headers['Content-Type'] = 'application/json';
-      req.body = jsonEncode({'q': fullPrompt, 'format': 'sse'});
+      req.body = jsonEncode({'q': _buildPrompt(prompt, imgs, needTitle: needTitle), 'format': 'sse'});
 
-      final res = await client.send(req);
-      if (res.statusCode != 200) throw Exception('Server Error ${res.statusCode}');
+      http.StreamedResponse res;
+      try {
+        res = await client.send(req).timeout(const Duration(seconds: 30));
+      } catch (_) {
+        _updateStatus(aiId, GenStatus.error,
+            text: '⚠️ Connection error. Please check your internet and try again.');
+        return;
+      }
+
+      if (res.statusCode != 200) {
+        _updateStatus(aiId, GenStatus.error,
+            text: '⚠️ API error (${res.statusCode}). Please try again.');
+        client.close();
+        return;
+      }
 
       _updateStatus(aiId, GenStatus.streaming);
       String streamed  = '';
@@ -722,8 +792,7 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
                 if (firstChunk && ans.trim().isEmpty) continue;
                 firstChunk = false;
                 streamed  += ans;
-                // Show cleaned text (hide <<<...>>> blocks)
-                _updateText(aiId, _cleanTagsForDisplay(streamed));
+                _updateText(aiId, _cleanTagsDisplay(streamed));
               }
             } catch (_) {}
           }
@@ -731,59 +800,53 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
       }
 
       if (!_stopRequested) {
-        // Parse TITLE (only for first message)
+        // Parse TITLE
         if (needTitle) {
-          final titleMatch = RegExp(r'<<<TITLE:\s*(.+?)>>>').firstMatch(streamed);
-          if (titleMatch != null) {
-            final title = titleMatch.group(1)!.trim();
+          final m = RegExp(r'<<<TITLE:\s*(.+?)>>>').firstMatch(streamed);
+          if (m != null) {
+            final t  = m.group(1)!.trim();
             final si = _sessions.indexWhere((s) => s.id == _currentId);
-            if (si != -1) {
-              setState(() {
-                _sessions[si].title          = title;
-                _sessions[si].titleGenerated = true;
-              });
-              _save();
-            }
+            if (si != -1) setState(() { _sessions[si].title = t; _sessions[si].titleGenerated = true; });
+            _save();
           }
         }
-
         // Parse MEMORY
-        final memMatch = RegExp(r'<<<MEMORY:\s*(\[[\s\S]+?\])>>>').firstMatch(streamed);
-        if (memMatch != null) {
+        final mm = RegExp(r'<<<MEMORY:\s*(\[[\s\S]+?\])>>>').firstMatch(streamed);
+        if (mm != null) {
           try {
-            final arr = jsonDecode(memMatch.group(1)!) as List;
+            final arr = jsonDecode(mm.group(1)!) as List;
             _addToMemory(arr.map((e) => e.toString()).toList());
           } catch (_) {}
         }
-
-        final clean = _cleanTags(streamed);
-        _updateStatus(aiId, GenStatus.completed, text: clean);
+        _updateStatus(aiId, GenStatus.completed, text: _cleanTags(streamed));
       }
     } catch (e) {
-      _updateStatus(aiId, GenStatus.error, text: '⚠️ Error: $e');
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('socket') || msg.contains('network') ||
+          msg.contains('dns') || msg.contains('connection')) {
+        _updateStatus(aiId, GenStatus.error,
+            text: '⚠️ No internet connection. Please check your network.');
+      } else {
+        _updateStatus(aiId, GenStatus.error,
+            text: '⚠️ Something went wrong. Please try again.');
+      }
     } finally {
       if (mounted) setState(() => _isGenerating = false);
       _save();
     }
   }
 
-  // Clean ALL tags from final text
-  String _cleanTags(String text) {
-    return text
-        .replaceAll(RegExp(r'<<<TITLE:[^>]*>>>'), '')
-        .replaceAll(RegExp(r'<<<MEMORY:[\s\S]*?>>>'), '')
-        .trim();
-  }
+  String _cleanTags(String t) => t
+      .replaceAll(RegExp(r'<<<TITLE:[^>]*>>>'), '')
+      .replaceAll(RegExp(r'<<<MEMORY:[\s\S]*?>>>'), '')
+      .trim();
 
-  // For streaming display: hide any partial or full <<<...>>> blocks
-  String _cleanTagsForDisplay(String text) {
-    // Remove complete tags
-    String clean = text
+  String _cleanTagsDisplay(String t) {
+    String c = t
         .replaceAll(RegExp(r'<<<TITLE:[^>]*>>>'), '')
         .replaceAll(RegExp(r'<<<MEMORY:[\s\S]*?>>>'), '');
-    // Remove partial tag that hasn't closed yet (starts with < or <<<)
-    clean = clean.replaceAll(RegExp(r'<{1,3}[^>]*$'), '');
-    return clean.trim();
+    c = c.replaceAll(RegExp(r'<{1,3}[^>]*$'), '');
+    return c.trim();
   }
 
   void _addAiMsg(String id, String text, GenStatus status) {
@@ -826,7 +889,7 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
     }
   }
 
-  // ── TTS ──────────────────────────────────────────────────
+  // ── TTS  (parallel pre-fetch + disk cache) ────────
   Future<void> _handleTTS(String id, String text) async {
     if (_speakingId == id && _isPlayingTTS) {
       await _ttsPlayer.pause();
@@ -838,27 +901,49 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
       setState(() => _isPlayingTTS = true);
       return;
     }
+
     await _ttsPlayer.stop();
     setState(() {
       _speakingId   = id;
       _isPlayingTTS = false;
       _isTTSLoading = true;
       _ttsQueue.clear();
+      _ttsPending.clear();
     });
+
     final chunks = _chunkText(text.replaceAll(RegExp(r'```[\s\S]*?```'), ''));
     if (chunks.isEmpty) {
       setState(() { _isTTSLoading = false; _speakingId = null; });
       return;
     }
+
+    // Fetch all chunks in parallel (with cache)
     try {
-      final urls = await Future.wait(chunks.map((c) => _buildTTSUrl(c)));
+      final paths = await Future.wait(chunks.map(_fetchTTSPath));
       if (!mounted) return;
-      _ttsQueue.addAll(urls);
-      setState(() { _isTTSLoading = false; _isPlayingTTS = true; });
+      // First chunk ready → start playing immediately, others will queue
+      setState(() { _isTTSLoading = false; _isPlayingTTS = true; _ttsQueue = paths; });
       await _playNextTTS();
     } catch (_) {
       if (mounted) setState(() { _isTTSLoading = false; _isPlayingTTS = false; _speakingId = null; });
     }
+  }
+
+  Future<String> _fetchTTSPath(String text) async {
+    // Check cache first
+    final cached = await TtsCache.get(text);
+    if (cached != null) return cached;
+
+    // Download
+    final url = 'https://murf.ai/Prod/anonymous-tts/audio'
+        '?text=${Uri.encodeComponent(text)}'
+        '&voiceId=VM017230562791058FV&style=Conversational';
+    final res = await http.get(Uri.parse(url),
+        headers: {'User-Agent': 'Mozilla/5.0', 'Accept': 'audio/mpeg, */*'});
+    if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
+      return await TtsCache.store(text, res.bodyBytes);
+    }
+    throw Exception('TTS fetch failed');
   }
 
   List<String> _chunkText(String text, {int size = 190}) {
@@ -878,23 +963,16 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
     return chunks.where((s) => s.isNotEmpty).toList();
   }
 
-  Future<String> _buildTTSUrl(String text) async {
-    return 'https://murf.ai/Prod/anonymous-tts/audio'
-        '?text=${Uri.encodeComponent(text)}'
-        '&voiceId=VM017230562791058FV&style=Conversational';
-  }
-
   Future<void> _playNextTTS() async {
     if (_ttsQueue.isEmpty) {
       setState(() { _isPlayingTTS = false; _speakingId = null; });
       return;
     }
-    try {
-      await _ttsPlayer.play(UrlSource(_ttsQueue.removeAt(0)));
-    } catch (_) { _playNextTTS(); }
+    final path = _ttsQueue.removeAt(0);
+    try { await _ttsPlayer.play(DeviceFileSource(path)); } catch (_) { _playNextTTS(); }
   }
 
-  // ── Reaction ─────────────────────────────────────────────
+  // ── Reaction ──────────────────────────────────────
   void _setReaction(String msgId, bool like) {
     final si = _sessions.indexWhere((s) => s.id == _currentId);
     if (si == -1) return;
@@ -912,16 +990,14 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
     _save();
   }
 
-  // ── Delete confirmation ────────────────────────────────
-  Future<bool> _confirmDelete() async {
+  // ── Delete confirm ────────────────────────────────
+  Future<bool> _confirmDelete(BuildContext ctx) async {
     return await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
+      context: ctx, barrierDismissible: false,
       builder: (_) => AlertDialog(
         backgroundColor: C.card,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text('Delete Chat',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
+        title: Text('Delete Chat', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
         content: Text('Are you sure? This cannot be undone.',
             style: TextStyle(fontSize: 14, color: C.ink2)),
         actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -943,60 +1019,115 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               padding: const EdgeInsets.symmetric(vertical: 12),
             ),
-            child: const Text('Delete',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+            child: const Text('Delete', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
           )),
         ])],
       ),
     ) ?? false;
   }
 
-  // ── Toast ─────────────────────────────────────────────────
+  // ── Rename dialog ─────────────────────────────────
+  Future<void> _renameSession(Session s) async {
+    final ctrl = TextEditingController(text: s.title);
+    final ok   = await showDialog<bool>(
+      context: context, barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        backgroundColor: C.card,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('Rename Chat', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
+        content: TextField(
+          controller: ctrl,
+          maxLength: 100, maxLines: 1,
+          style: TextStyle(fontSize: 14, color: C.ink),
+          decoration: InputDecoration(
+            counterText: '',
+            hintText: 'Chat title…',
+            hintStyle: TextStyle(color: C.ink2),
+            filled: true, fillColor: C.bg,
+            border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: C.border)),
+            focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: C.accent)),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          ),
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        actions: [Row(children: [
+          Expanded(child: OutlinedButton(
+            onPressed: () => Navigator.pop(context, false),
+            style: OutlinedButton.styleFrom(
+              side: BorderSide(color: C.border),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              padding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+            child: Text('Cancel', style: TextStyle(color: C.ink2, fontWeight: FontWeight.w600)),
+          )),
+          const SizedBox(width: 10),
+          Expanded(child: ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: C.accent, elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              padding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+            child: const Text('Save', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+          )),
+        ])],
+      ),
+    ) ?? false;
+    ctrl.dispose();
+    if (ok) {
+      final newTitle = ctrl.text.trim();
+      if (newTitle.isNotEmpty) {
+        setState(() => s.title = newTitle);
+        _save();
+      }
+    }
+  }
+
+  // ── Toast (center overlay) ────────────────────────
   OverlayEntry? _toastEntry;
   void _showToast(String msg) {
     _toastEntry?.remove();
     _toastEntry = OverlayEntry(
       builder: (_) => Positioned(
-        left: 24, right: 24,
-        bottom: MediaQuery.of(context).size.height * 0.42,
+        left: 40, right: 40,
+        top: MediaQuery.of(context).size.height * 0.44,
         child: Material(
           color: Colors.transparent,
           child: Center(child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
             decoration: BoxDecoration(
-              color: C.ink.withOpacity(0.88), borderRadius: BorderRadius.circular(20)),
-            child: Text(msg,
-                style: const TextStyle(color: Colors.white, fontSize: 13),
+                color: C.ink.withOpacity(0.9), borderRadius: BorderRadius.circular(20)),
+            child: Text(msg, style: const TextStyle(color: Colors.white, fontSize: 13),
                 textAlign: TextAlign.center),
           )),
         ),
       ),
     );
     Overlay.of(context).insert(_toastEntry!);
-    Future.delayed(const Duration(milliseconds: 1800), () {
+    Future.delayed(const Duration(milliseconds: 1600), () {
       _toastEntry?.remove(); _toastEntry = null;
     });
   }
 
-  // ── Image fullscreen viewer ────────────────────────────
-  void _openImageViewer(String url) {
-    Navigator.push(context, MaterialPageRoute(
-      builder: (_) => _ImageViewerPage(imageUrl: url),
-    ));
-  }
+  // ── Image fullscreen viewer ───────────────────────
+  void _openImage(String url) => Navigator.push(context, MaterialPageRoute(
+      builder: (_) => _ImageViewerPage(imageUrl: url)));
 
-  // ══════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════
   // BUILD
-  // ══════════════════════════════════════════════════════
-
+  // ═══════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
     final msgs = _curSession.messages;
     return Scaffold(
-      key:             _scaffoldKey,
+      key: _scaffoldKey,
       backgroundColor: C.bg,
-      drawer:          _buildDrawer(),
-      appBar:          _buildAppBar(),
+      drawer: _buildDrawer(),
+      appBar: _buildAppBar(),
       body: Stack(children: [
         Column(children: [
           Expanded(
@@ -1009,75 +1140,78 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
                     itemCount: msgs.length,
                     itemBuilder: (ctx, i) => RepaintBoundary(
                       child: _BubbleWidget(
-                        key:          ValueKey(msgs[i].id),
-                        msg:          msgs[i],
+                        key: ValueKey(msgs[i].id),
+                        msg: msgs[i],
                         isPlayingTTS: _isPlayingTTS && _speakingId == msgs[i].id,
                         isTTSLoading: _isTTSLoading && _speakingId == msgs[i].id,
-                        onSpeak:     (id, text) => _handleTTS(id, text),
-                        onCopy:      (text) => Clipboard.setData(ClipboardData(text: text)),
-                        onLike:      (id) => _setReaction(id, true),
-                        onDislike:   (id) => _setReaction(id, false),
-                        onImageTap:  (url) => _openImageViewer(url),
+                        onSpeak:    (id, t) => _handleTTS(id, t),
+                        onCopy:     (t) {
+                          Clipboard.setData(ClipboardData(text: t));
+                          _showToast('Copied ✓');
+                        },
+                        onLike:     (id) => _setReaction(id, true),
+                        onDislike:  (id) => _setReaction(id, false),
+                        onImageTap: (url) => _openImage(url),
                       ),
                     ),
                   ),
           ),
           _buildInput(),
         ]),
-        if (_showScrollFab)
-          Positioned(
-            bottom: _inputHeight + 12,
-            left: 0, right: 0,
-            child: Center(child: _ScrollFab(onTap: () {
-              setState(() => _showScrollFab = false);
-              _scrollCtrl.animateTo(
-                _scrollCtrl.position.maxScrollExtent + 200,
-                duration: const Duration(milliseconds: 350),
-                curve: Curves.easeOut,
-              );
-            })),
-          ),
+        // Scroll FAB
+        AnimatedPositioned(
+          duration: const Duration(milliseconds: 200),
+          bottom: _showScrollFab ? _inputHeight + 12 : -60,
+          left: 0, right: 0,
+          child: Center(child: _ScrollFab(onTap: () {
+            setState(() => _showScrollFab = false);
+            _scrollCtrl.animateTo(_scrollCtrl.position.maxScrollExtent + 200,
+                duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+          })),
+        ),
       ]),
     );
   }
 
   double get _inputHeight {
     final pad = MediaQuery.of(context).padding.bottom;
-    return 72 + pad + (_pendingImages.isNotEmpty ? 70 : 0);
+    return 72 + pad + (_pendingImages.isNotEmpty ? 72 : 0);
   }
 
-  // ── AppBar ────────────────────────────────────────────────
+  // ── AppBar ─────────────────────────────────────────
   PreferredSizeWidget _buildAppBar() {
     return AppBar(
       backgroundColor: C.card,
       elevation: 0, scrolledUnderElevation: 0,
-      toolbarHeight: 52, leadingWidth: 120,
+      toolbarHeight: 52, leadingWidth: 130,
       leading: Row(children: [
         const SizedBox(width: 4),
-        Material(
-          color: Colors.transparent,
-          child: InkWell(
-            borderRadius: BorderRadius.circular(10),
-            onTap: () => _scaffoldKey.currentState?.openDrawer(),
-            child: SizedBox(width: 40, height: 40,
-                child: Icon(Icons.menu_rounded, color: C.ink, size: 22)),
+        Tooltip(
+          message: 'Menu',
+          child: Material(color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => _scaffoldKey.currentState?.openDrawer(),
+              child: SizedBox(width: 40, height: 40,
+                  child: Icon(Icons.menu_rounded, color: C.ink, size: 22)),
+            ),
           ),
         ),
         const SizedBox(width: 6),
-        Text('SkyGen', style: TextStyle(
-            fontSize: 17, fontWeight: FontWeight.w800, color: C.ink, letterSpacing: -0.2)),
+        Text('SkyGen', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800,
+            color: C.ink, letterSpacing: -0.2)),
       ]),
       actions: [
-        Material(
-          color: Colors.transparent, shape: const CircleBorder(),
-          child: InkWell(
-            customBorder: const CircleBorder(),
-            onTap: () { if (!_isTempSession) _newTempSession(); },
-            child: Container(
-              width: 38, height: 38,
-              decoration: BoxDecoration(
-                  shape: BoxShape.circle, border: Border.all(color: C.border, width: 1.5)),
-              child: Icon(Icons.add_rounded, color: C.ink, size: 20),
+        Tooltip(
+          message: 'New Chat',
+          child: Material(color: Colors.transparent, shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: () { if (!_isTempSession) _newTempSession(); },
+              child: Container(width: 38, height: 38,
+                decoration: BoxDecoration(shape: BoxShape.circle,
+                    border: Border.all(color: C.border, width: 1.5)),
+                child: Icon(Icons.add_rounded, color: C.ink, size: 20)),
             ),
           ),
         ),
@@ -1086,7 +1220,7 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
     );
   }
 
-  // ── Drawer ────────────────────────────────────────────────
+  // ── Drawer ─────────────────────────────────────────
   Widget _buildDrawer() {
     final filtered = _searchQuery.isEmpty
         ? _sessions
@@ -1096,190 +1230,218 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
     return Drawer(
       backgroundColor: C.card,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
-      child: SafeArea(
-        child: Column(children: [
-          // Header
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 14, 14, 6),
-            child: Row(children: [
-              _LogoCircle(size: 34),
-              const SizedBox(width: 9),
-              Text('SkyGen', style: TextStyle(
-                  fontSize: 16, fontWeight: FontWeight.w800, color: C.ink)),
-              const Spacer(),
-              GestureDetector(
-                onTap: () { if (!_isTempSession) _newTempSession(); Navigator.pop(context); },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                      color: C.accentL, borderRadius: BorderRadius.circular(8)),
-                  child: Row(children: [
-                    Icon(Icons.add_rounded, color: C.accent, size: 14),
-                    const SizedBox(width: 4),
-                    Text('New', style: TextStyle(
-                        color: C.accent, fontSize: 12, fontWeight: FontWeight.w700)),
-                  ]),
+      child: SafeArea(child: Column(children: [
+        // Header
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 14, 12, 6),
+          child: Row(children: [
+            _LogoCircle(size: 34),
+            const SizedBox(width: 9),
+            Text('SkyGen', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: C.ink)),
+            const Spacer(),
+            // Theme toggle icon
+            Tooltip(
+              message: C.dark ? 'Light Mode' : 'Dark Mode',
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                transitionBuilder: (child, anim) => RotationTransition(
+                    turns: anim, child: FadeTransition(opacity: anim, child: child)),
+                child: Material(
+                  key: ValueKey(C.dark),
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () { themeNotifier.toggle(); HapticFeedback.lightImpact(); },
+                    child: Container(
+                      width: 34, height: 34,
+                      alignment: Alignment.center,
+                      child: Icon(
+                        C.dark ? Icons.wb_sunny_rounded : Icons.nightlight_round,
+                        color: C.dark ? const Color(0xFFFBBF24) : const Color(0xFF6366F1),
+                        size: 18,
+                      ),
+                    ),
+                  ),
                 ),
               ),
+            ),
+            const SizedBox(width: 4),
+            // New chat icon only
+            Tooltip(
+              message: 'New Chat',
+              child: Material(color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () { if (!_isTempSession) _newTempSession(); Navigator.pop(context); },
+                  child: Container(
+                    width: 34, height: 34,
+                    decoration: BoxDecoration(color: C.accentL, borderRadius: BorderRadius.circular(8)),
+                    child: Icon(Icons.add_rounded, color: C.accent, size: 18),
+                  ),
+                ),
+              ),
+            ),
+          ]),
+        ),
+
+        // Search
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+          child: Container(
+            height: 36,
+            decoration: BoxDecoration(color: C.bg, borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: C.border)),
+            child: Row(children: [
+              const SizedBox(width: 10),
+              Icon(Icons.search_rounded, color: C.ink2, size: 15),
+              const SizedBox(width: 6),
+              Expanded(child: TextField(
+                controller: _searchCtrl,
+                style: TextStyle(fontSize: 13, color: C.ink),
+                decoration: InputDecoration(
+                  hintText: 'Search chats…',
+                  hintStyle: TextStyle(color: C.ink2, fontSize: 13),
+                  border: InputBorder.none, isDense: true, contentPadding: EdgeInsets.zero,
+                ),
+                onChanged: (v) => setState(() => _searchQuery = v),
+              )),
+              if (_searchQuery.isNotEmpty)
+                GestureDetector(
+                  onTap: () { _searchCtrl.clear(); setState(() => _searchQuery = ''); },
+                  child: Padding(padding: const EdgeInsets.only(right: 8),
+                      child: Icon(Icons.close_rounded, color: C.ink2, size: 13)),
+                ),
             ]),
           ),
+        ),
 
-          // Search
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-            child: Container(
-              height: 36,
-              decoration: BoxDecoration(
-                  color: C.bg, borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: C.border)),
-              child: Row(children: [
-                const SizedBox(width: 10),
-                Icon(Icons.search_rounded, color: C.ink2, size: 15),
-                const SizedBox(width: 6),
-                Expanded(child: TextField(
-                  controller: _searchCtrl,
-                  style: TextStyle(fontSize: 13, color: C.ink),
-                  decoration: InputDecoration(
-                    hintText: 'Search chats…',
-                    hintStyle: TextStyle(color: C.ink2, fontSize: 13),
-                    border: InputBorder.none, isDense: true,
-                    contentPadding: EdgeInsets.zero,
-                  ),
-                  onChanged: (v) => setState(() => _searchQuery = v),
-                )),
-                if (_searchQuery.isNotEmpty)
-                  GestureDetector(
-                    onTap: () { _searchCtrl.clear(); setState(() => _searchQuery = ''); },
-                    child: Padding(padding: const EdgeInsets.only(right: 8),
-                        child: Icon(Icons.close_rounded, color: C.ink2, size: 13)),
-                  ),
-              ]),
-            ),
-          ),
+        Divider(height: 1, color: C.border),
 
-          Divider(height: 1, color: C.border),
-
-          // Session list
-          Expanded(
-            child: filtered.isEmpty
-                ? Center(child: Text('No chats yet.',
-                    style: TextStyle(color: C.ink2, fontSize: 13)))
-                : ListView.builder(
-                    padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
-                    itemCount: filtered.length,
-                    itemBuilder: (ctx, i) {
-                      final s      = filtered[i];
-                      if (s.messages.isEmpty) return const SizedBox.shrink();
-                      final active = s.id == _currentId && !_isTempSession;
-                      return Material(
+        // Session list with AnimatedList-style
+        Expanded(
+          child: filtered.isEmpty
+              ? Center(child: Text('No chats yet.', style: TextStyle(color: C.ink2, fontSize: 13)))
+              : ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 6),
+                  itemCount: filtered.length,
+                  itemBuilder: (ctx, i) {
+                    final s      = filtered[i];
+                    if (s.messages.isEmpty) return const SizedBox.shrink();
+                    final active = s.id == _currentId && !_isTempSession;
+                    return AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      margin: const EdgeInsets.symmetric(vertical: 1),
+                      decoration: BoxDecoration(
                         color: active ? C.accentL : Colors.transparent,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Material(
+                        color: Colors.transparent,
                         borderRadius: BorderRadius.circular(10),
                         child: InkWell(
                           borderRadius: BorderRadius.circular(10),
                           onTap: () => _switchSession(s.id),
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
                             child: Row(children: [
-                              Icon(s.isPinned ? Icons.push_pin_rounded
-                                  : Icons.chat_bubble_outline_rounded,
-                                  size: 14, color: active ? C.accent : C.ink2),
-                              const SizedBox(width: 9),
+                              Icon(s.isPinned ? Icons.push_pin_rounded : Icons.chat_bubble_outline_rounded,
+                                  size: 13, color: active ? C.accent : C.ink2),
+                              const SizedBox(width: 8),
                               Expanded(child: Text(s.title,
                                   maxLines: 1, overflow: TextOverflow.ellipsis,
                                   style: TextStyle(fontSize: 13,
                                       fontWeight: active ? FontWeight.w700 : FontWeight.w500,
                                       color: active ? C.accent : C.ink))),
                               PopupMenuButton<String>(
-                                icon: Icon(Icons.more_vert_rounded, size: 15, color: C.ink2),
-                                padding: EdgeInsets.zero, iconSize: 15,
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(10)),
+                                icon: Icon(Icons.more_vert_rounded, size: 14, color: C.ink2),
+                                padding: EdgeInsets.zero, iconSize: 14,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                                 color: C.card, elevation: 4,
                                 onSelected: (val) async {
                                   if (val == 'pin') {
+                                    HapticFeedback.lightImpact();
                                     setState(() { s.isPinned = !s.isPinned; _sortSessions(); });
                                     _save();
-                                    HapticFeedback.lightImpact();
+                                  } else if (val == 'rename') {
+                                    await _renameSession(s);
                                   } else if (val == 'delete') {
-                                    final ok = await _confirmDelete();
+                                    final ok = await _confirmDelete(ctx);
                                     if (ok) {
-                                      await Future.delayed(const Duration(milliseconds: 300));
+                                      HapticFeedback.mediumImpact();
+                                      await Future.delayed(const Duration(milliseconds: 250));
                                       setState(() {
                                         _sessions.remove(s);
                                         if (_currentId == s.id) _newTempSession();
                                       });
                                       _save();
-                                      HapticFeedback.mediumImpact();
                                     }
                                   }
                                 },
                                 itemBuilder: (_) => [
-                                  PopupMenuItem(value: 'pin',
-                                    child: Row(children: [
-                                      Icon(s.isPinned ? Icons.push_pin_outlined : Icons.push_pin_rounded,
-                                          size: 14, color: C.accent),
-                                      const SizedBox(width: 8),
-                                      Text(s.isPinned ? 'Unpin' : 'Pin',
-                                          style: TextStyle(fontSize: 13, color: C.ink)),
-                                    ])),
-                                  PopupMenuItem(value: 'delete',
-                                    child: Row(children: [
-                                      Icon(Icons.delete_outline_rounded, size: 14, color: C.red),
-                                      const SizedBox(width: 8),
-                                      Text('Delete', style: TextStyle(fontSize: 13, color: C.red)),
-                                    ])),
+                                  PopupMenuItem(value: 'pin', child: Row(children: [
+                                    Icon(s.isPinned ? Icons.push_pin_outlined : Icons.push_pin_rounded,
+                                        size: 14, color: C.accent),
+                                    const SizedBox(width: 8),
+                                    Text(s.isPinned ? 'Unpin' : 'Pin',
+                                        style: TextStyle(fontSize: 13, color: C.ink)),
+                                  ])),
+                                  PopupMenuItem(value: 'rename', child: Row(children: [
+                                    Icon(Icons.edit_rounded, size: 14, color: C.ink2),
+                                    const SizedBox(width: 8),
+                                    Text('Rename', style: TextStyle(fontSize: 13, color: C.ink)),
+                                  ])),
+                                  PopupMenuItem(value: 'delete', child: Row(children: [
+                                    Icon(Icons.delete_outline_rounded, size: 14, color: C.red),
+                                    const SizedBox(width: 8),
+                                    Text('Delete', style: TextStyle(fontSize: 13, color: C.red)),
+                                  ])),
                                 ],
                               ),
                             ]),
                           ),
                         ),
-                      );
-                    },
-                  ),
-          ),
+                      ),
+                    );
+                  },
+                ),
+        ),
 
-          Divider(height: 1, color: C.border),
-
-          // Settings button
-          InkWell(
-            onTap: () {
-              HapticFeedback.lightImpact();
-              _showSettingsSheet();
-            },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(children: [
-                Icon(Icons.settings_outlined, size: 18, color: C.ink2),
-                const SizedBox(width: 10),
-                Text('Settings', style: TextStyle(fontSize: 13, color: C.ink, fontWeight: FontWeight.w500)),
-                const Spacer(),
-                Icon(Icons.chevron_right_rounded, size: 18, color: C.ink2),
-              ]),
-            ),
+        Divider(height: 1, color: C.border),
+        // Settings button
+        InkWell(
+          onTap: () { HapticFeedback.lightImpact(); _showSettings(); },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+            child: Row(children: [
+              Icon(Icons.settings_outlined, size: 17, color: C.ink2),
+              const SizedBox(width: 10),
+              Text('Settings', style: TextStyle(fontSize: 13, color: C.ink, fontWeight: FontWeight.w500)),
+              const Spacer(),
+              Icon(Icons.chevron_right_rounded, size: 17, color: C.ink2),
+            ]),
           ),
-
-          Divider(height: 1, color: C.border),
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            child: Text('SkyGen can make mistake, double check output',
-                style: TextStyle(fontSize: 10.5, color: C.ink2),
-                textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ),
-        ]),
-      ),
+        ),
+        Divider(height: 1, color: C.border),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Text('SkyGen can make mistake, double check output',
+              style: TextStyle(fontSize: 10, color: C.ink2),
+              textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis),
+        ),
+      ])),
     );
   }
 
-  // ── Settings Bottom Sheet ─────────────────────────────────
-  void _showSettingsSheet() {
-    Navigator.pop(context); // close drawer first
+  // ── Settings sheet ────────────────────────────────
+  void _showSettings() {
+    Navigator.pop(context);
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _SettingsSheet(
         aiMemory: _aiMemory,
-        onClearMemory: (newList) { setState(() => _aiMemory = newList); _saveMemory(); },
+        onClearMemory: (list) { setState(() => _aiMemory = list); _saveMemory(); },
         onClearAllChats: () async {
           final ok = await showDialog<bool>(
             context: context,
@@ -1288,7 +1450,7 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               title: Text('Delete All Chats',
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
-              content: Text('All chats will be deleted. Memory and settings will remain.',
+              content: Text('All chats will be deleted. Memory will remain.',
                   style: TextStyle(fontSize: 14, color: C.ink2)),
               actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
               actions: [Row(children: [
@@ -1321,36 +1483,40 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
     );
   }
 
-  // ── Welcome ───────────────────────────────────────────────
+  // ── Welcome screen ────────────────────────────────
   Widget _buildWelcome() {
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: 28),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           _LogoCircle(size: 72),
-          const SizedBox(height: 18),
+          const SizedBox(height: 16),
           Text('What can I help with?',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink),
               textAlign: TextAlign.center),
           const SizedBox(height: 28),
           GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
+            shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
             gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: 2, childAspectRatio: 1.75,
               crossAxisSpacing: 10, mainAxisSpacing: 10,
             ),
-            itemCount: _quickCards.length,
+            itemCount: 4,
             itemBuilder: (ctx, i) {
-              final c = _quickCards[i];
+              final cards = [
+                {'icon': Icons.auto_fix_high_rounded, 'label': 'Grammar Check',  'color': C.grad1},
+                {'icon': Icons.translate_rounded,     'label': 'Translation',    'color': C.green},
+                {'icon': Icons.school_rounded,        'label': 'Learn Tenses',   'color': const Color(0xFFF59E0B)},
+                {'icon': Icons.edit_note_rounded,     'label': 'Essay Writing',  'color': C.red},
+              ];
+              final c = cards[i];
               return Material(
                 color: C.card, borderRadius: BorderRadius.circular(14),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(14), onTap: () {},
                   child: Container(
                     decoration: BoxDecoration(
-                        border: Border.all(color: C.border),
-                        borderRadius: BorderRadius.circular(14)),
+                        border: Border.all(color: C.border), borderRadius: BorderRadius.circular(14)),
                     padding: const EdgeInsets.all(13),
                     child: Row(children: [
                       Container(
@@ -1358,13 +1524,11 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
                         decoration: BoxDecoration(
                             color: (c['color'] as Color).withOpacity(0.12),
                             borderRadius: BorderRadius.circular(8)),
-                        child: Icon(c['icon'] as IconData,
-                            color: c['color'] as Color, size: 15),
+                        child: Icon(c['icon'] as IconData, color: c['color'] as Color, size: 15),
                       ),
                       const SizedBox(width: 10),
                       Expanded(child: Text(c['label'] as String,
-                          style: TextStyle(fontSize: 12,
-                              fontWeight: FontWeight.w700, color: C.ink))),
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: C.ink))),
                     ]),
                   ),
                 ),
@@ -1376,71 +1540,59 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
     );
   }
 
-  // ── Input ─────────────────────────────────────────────────
+  // ── Input area ────────────────────────────────────
   Widget _buildInput() {
     final pad = MediaQuery.of(context).padding.bottom;
+    final active = _canSend;
     return Container(
       color: C.card,
       child: Column(children: [
         Divider(height: 1, color: C.border),
+        // Image previews
         if (_pendingImages.isNotEmpty)
-          SizedBox(
-            height: 70,
+          SizedBox(height: 72,
             child: ListView.builder(
-              padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
               scrollDirection: Axis.horizontal,
               itemCount: _pendingImages.length,
               itemBuilder: (ctx, i) {
                 final img = _pendingImages[i];
                 return Stack(clipBehavior: Clip.none, children: [
-                  Container(
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
                     width: 56, height: 56,
                     margin: const EdgeInsets.only(right: 10),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(
-                          color: img.isError ? C.red : C.border,
-                          width: img.isError ? 2 : 1),
-                      image: DecorationImage(
-                          image: FileImage(img.file), fit: BoxFit.cover),
+                          color: img.isError ? C.red : (img.isLoading ? C.border : C.green),
+                          width: img.isError ? 2 : 1.5),
+                      image: DecorationImage(image: FileImage(img.file), fit: BoxFit.cover),
                     ),
                     child: img.isLoading
                         ? Container(
-                            decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(0.38),
+                            decoration: BoxDecoration(color: Colors.black.withOpacity(0.38),
                                 borderRadius: BorderRadius.circular(10)),
                             child: const Center(child: SizedBox(width: 18, height: 18,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2, color: Colors.white))))
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))))
                         : img.isError
                             ? Container(
-                                decoration: BoxDecoration(
-                                    color: C.red.withOpacity(0.3),
+                                decoration: BoxDecoration(color: C.red.withOpacity(0.3),
                                     borderRadius: BorderRadius.circular(10)),
-                                child: const Center(
-                                    child: Icon(Icons.error_outline, color: Colors.white, size: 20)))
-                            : img.uploadedUrl != null
-                                ? Align(
-                                    alignment: Alignment.bottomRight,
-                                    child: Container(
-                                      width: 16, height: 16, margin: const EdgeInsets.all(3),
-                                      decoration: BoxDecoration(
-                                          color: C.green, shape: BoxShape.circle),
-                                      child: const Icon(Icons.check, size: 10, color: Colors.white),
-                                    ))
-                                : null,
+                                child: const Center(child: Icon(Icons.error_outline, color: Colors.white, size: 20)))
+                            : Align(alignment: Alignment.bottomRight,
+                                child: Container(width: 15, height: 15, margin: const EdgeInsets.all(3),
+                                  decoration: BoxDecoration(color: C.green, shape: BoxShape.circle),
+                                  child: const Icon(Icons.check, size: 9, color: Colors.white))),
                   ),
                   if (!img.isLoading)
-                    Positioned(
-                      top: -6, right: 2,
+                    Positioned(top: -6, right: 2,
                       child: GestureDetector(
                         onTap: () => setState(() => _pendingImages.removeAt(i)),
-                        child: Container(
-                          width: 18, height: 18,
+                        child: Container(width: 18, height: 18,
                           decoration: BoxDecoration(color: C.red, shape: BoxShape.circle),
                           child: const Icon(Icons.close, size: 11, color: Colors.white)),
-                      ),
-                    ),
+                      )),
                 ]);
               },
             ),
@@ -1452,17 +1604,17 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
                 color: C.bg, borderRadius: BorderRadius.circular(18),
                 border: Border.all(color: C.border)),
             child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Padding(
-                padding: const EdgeInsets.only(left: 8, bottom: 7),
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(9), onTap: _pickImages,
-                    child: Container(
-                      width: 32, height: 32,
-                      decoration: BoxDecoration(
-                          color: C.accentL, borderRadius: BorderRadius.circular(9)),
-                      child: Icon(Icons.image_outlined, color: C.accent, size: 16)),
+              Tooltip(
+                message: 'Attach image',
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 8, bottom: 7),
+                  child: Material(color: Colors.transparent,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(9), onTap: _pickImages,
+                      child: Container(width: 32, height: 32,
+                        decoration: BoxDecoration(color: C.accentL, borderRadius: BorderRadius.circular(9)),
+                        child: Icon(Icons.image_outlined, color: C.accent, size: 16)),
+                    ),
                   ),
                 ),
               ),
@@ -1480,25 +1632,27 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
                   contentPadding: const EdgeInsets.symmetric(vertical: 9),
                 ),
               )),
-              Padding(
-                padding: const EdgeInsets.only(right: 7, bottom: 7),
-                child: GestureDetector(
-                  onTap: _isGenerating
-                      ? () => setState(() => _stopRequested = true)
-                      : _send,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    width: 34, height: 34,
-                    decoration: BoxDecoration(
-                      gradient: _isGenerating ? null
-                          : const LinearGradient(colors: [C.grad1, C.grad2],
-                              begin: Alignment.topLeft, end: Alignment.bottomRight),
-                      color: _isGenerating ? C.red : null,
-                      borderRadius: BorderRadius.circular(9),
+              Tooltip(
+                message: _isGenerating ? 'Stop' : 'Send message',
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 7, bottom: 7),
+                  child: GestureDetector(
+                    onTap: _isGenerating ? () => setState(() => _stopRequested = true) : _send,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      width: 34, height: 34,
+                      decoration: BoxDecoration(
+                        gradient: (_isGenerating || active)
+                            ? const LinearGradient(colors: [C.grad1, C.grad2],
+                                begin: Alignment.topLeft, end: Alignment.bottomRight)
+                            : null,
+                        color: (!_isGenerating && !active) ? C.ink2.withOpacity(0.3) : null,
+                        borderRadius: BorderRadius.circular(9),
+                      ),
+                      child: Icon(
+                        _isGenerating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+                        color: Colors.white, size: 18),
                     ),
-                    child: Icon(
-                      _isGenerating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
-                      color: Colors.white, size: 18),
                   ),
                 ),
               ),
@@ -1508,7 +1662,7 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
         Padding(
           padding: EdgeInsets.only(bottom: pad > 0 ? 2 : 6),
           child: Text('SkyGen can make mistake, double check output',
-              style: TextStyle(fontSize: 10.5, color: C.ink2),
+              style: TextStyle(fontSize: 10, color: C.ink2),
               textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis),
         ),
       ]),
@@ -1516,192 +1670,161 @@ Non-English topics: "I can only help with English learning! 📚 Ask me anything
   }
 }
 
-// ══════════════════════════════════════════════════════════════
-// 9. SETTINGS BOTTOM SHEET
-// ══════════════════════════════════════════════════════════════
-
+// ═══════════════════════════════════════════════════
+// 10. SETTINGS SHEET
+// ═══════════════════════════════════════════════════
 class _SettingsSheet extends StatefulWidget {
-  final List<String> aiMemory;
+  final List<String>       aiMemory;
   final void Function(List<String>) onClearMemory;
-  final VoidCallback onClearAllChats;
-
-  const _SettingsSheet({
-    required this.aiMemory,
-    required this.onClearMemory,
-    required this.onClearAllChats,
-  });
-
+  final VoidCallback       onClearAllChats;
+  const _SettingsSheet({required this.aiMemory, required this.onClearMemory, required this.onClearAllChats});
   @override
   State<_SettingsSheet> createState() => _SettingsSheetState();
 }
 
 class _SettingsSheetState extends State<_SettingsSheet> {
-  bool _showMemory    = false;
-  bool _showAbout     = false;
+  bool _showMemory = false;
+  bool _showAbout  = false;
+  bool _showDev    = false;
 
   @override
   Widget build(BuildContext context) {
-    if (_showMemory) return _buildMemoryPage();
-    if (_showAbout)  return _buildAboutPage();
-    return _buildMainSheet();
+    if (_showMemory) return _memoryPage();
+    if (_showAbout)  return _aboutPage();
+    if (_showDev)    return _devPage();
+    return _mainSheet();
   }
 
-  Widget _buildMainSheet() {
+  Widget _handle() => Container(
+    margin: const EdgeInsets.only(top: 10, bottom: 4),
+    width: 36, height: 4,
+    decoration: BoxDecoration(color: C.border, borderRadius: BorderRadius.circular(3)),
+  );
+
+  Widget _mainSheet() {
     return Container(
-      decoration: BoxDecoration(
-        color: C.card,
-        borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(20), topRight: Radius.circular(20)),
-      ),
+      decoration: BoxDecoration(color: C.card,
+          borderRadius: const BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20))),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        // Handle bar
-        Container(
-          margin: const EdgeInsets.only(top: 12, bottom: 4),
-          width: 36, height: 4,
-          decoration: BoxDecoration(color: C.border, borderRadius: BorderRadius.circular(3)),
-        ),
+        _handle(),
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 8, 16, 12),
+          padding: const EdgeInsets.fromLTRB(20, 6, 16, 10),
           child: Row(children: [
-            Text('Settings', style: TextStyle(
-                fontSize: 17, fontWeight: FontWeight.w800, color: C.ink)),
+            Text('Settings', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: C.ink)),
             const Spacer(),
             GestureDetector(
               onTap: () { HapticFeedback.lightImpact(); Navigator.pop(context); },
-              child: Container(
-                width: 30, height: 30,
+              child: Container(width: 30, height: 30,
                 decoration: BoxDecoration(color: C.bg, borderRadius: BorderRadius.circular(8)),
-                child: Icon(Icons.close_rounded, size: 16, color: C.ink2),
-              ),
+                child: Icon(Icons.close_rounded, size: 16, color: C.ink2)),
             ),
           ]),
         ),
         Divider(height: 1, color: C.border),
-
-        // Dark mode toggle
-        _SettingsTile(
-          icon: themeNotifier.isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
-          title: themeNotifier.isDark ? 'Light Mode' : 'Dark Mode',
-          trailing: Switch(
-            value: themeNotifier.isDark,
-            activeColor: C.accent,
-            onChanged: (_) { themeNotifier.toggle(); HapticFeedback.lightImpact(); setState(() {}); },
-          ),
-          onTap: () { themeNotifier.toggle(); HapticFeedback.lightImpact(); setState(() {}); },
-        ),
-
-        // Manage Memory
-        _SettingsTile(
-          icon: Icons.memory_rounded,
-          title: 'Manage Memory',
-          onTap: () { HapticFeedback.lightImpact(); setState(() => _showMemory = true); },
-        ),
-
-        // Delete all chats
-        _SettingsTile(
-          icon: Icons.delete_sweep_outlined,
-          title: 'Delete All Chats',
-          iconColor: C.red,
-          textColor: C.red,
-          onTap: () {
-            HapticFeedback.mediumImpact();
-            Navigator.pop(context);
-            widget.onClearAllChats();
-          },
-        ),
-
-        // Developer
-        _SettingsTile(
-          icon: Icons.code_rounded,
-          title: 'Developer',
-          onTap: () async {
-            HapticFeedback.lightImpact();
-            final uri = Uri.parse(kDevTg);
-            if (await canLaunchUrl(uri)) launchUrl(uri, mode: LaunchMode.externalApplication);
-          },
-        ),
-
-        // About App
-        _SettingsTile(
-          icon: Icons.info_outline_rounded,
-          title: 'About App',
-          onTap: () { HapticFeedback.lightImpact(); setState(() => _showAbout = true); },
-        ),
-
+        _tile(icon: Icons.memory_rounded, title: 'Manage Memory',
+            onTap: () { HapticFeedback.lightImpact(); setState(() => _showMemory = true); }),
+        _tile(icon: Icons.delete_sweep_outlined, title: 'Delete All Chats',
+            onTap: () { HapticFeedback.mediumImpact(); widget.onClearAllChats(); }),
+        _tile(icon: Icons.code_rounded, title: 'Developer',
+            onTap: () { HapticFeedback.lightImpact(); setState(() => _showDev = true); }),
+        _tile(icon: Icons.info_outline_rounded, title: 'About App',
+            onTap: () { HapticFeedback.lightImpact(); setState(() => _showAbout = true); }),
         SizedBox(height: MediaQuery.of(context).padding.bottom + 16),
       ]),
     );
   }
 
-  Widget _buildMemoryPage() {
-    final memory = widget.aiMemory;
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.65,
-      decoration: BoxDecoration(
-        color: C.card,
-        borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(20), topRight: Radius.circular(20)),
+  Widget _tile({required IconData icon, required String title, required VoidCallback onTap}) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        child: Row(children: [
+          Icon(icon, size: 18, color: C.ink2),
+          const SizedBox(width: 14),
+          Expanded(child: Text(title, style: TextStyle(fontSize: 14, color: C.ink, fontWeight: FontWeight.w500))),
+          Icon(Icons.chevron_right_rounded, size: 18, color: C.ink2),
+        ]),
       ),
+    );
+  }
+
+  Widget _subPageShell({required String title, required Widget child,
+      required VoidCallback onBack, double heightFactor = 0.65}) {
+    return Container(
+      height: MediaQuery.of(context).size.height * heightFactor,
+      decoration: BoxDecoration(color: C.card,
+          borderRadius: const BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20))),
       child: Column(children: [
-        Container(
-          margin: const EdgeInsets.only(top: 12, bottom: 4),
-          width: 36, height: 4,
-          decoration: BoxDecoration(color: C.border, borderRadius: BorderRadius.circular(3)),
-        ),
+        _handle(),
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
           child: Row(children: [
-            GestureDetector(
-              onTap: () { HapticFeedback.lightImpact(); setState(() => _showMemory = false); },
-              child: Icon(Icons.arrow_back_rounded, color: C.ink, size: 22),
-            ),
+            GestureDetector(onTap: onBack,
+                child: Icon(Icons.arrow_back_rounded, color: C.ink, size: 22)),
             const SizedBox(width: 12),
-            Text('Manage Memory', style: TextStyle(
-                fontSize: 16, fontWeight: FontWeight.w800, color: C.ink)),
-            const Spacer(),
-            if (memory.isNotEmpty)
-              GestureDetector(
-                onTap: () {
-                  HapticFeedback.mediumImpact();
-                  widget.onClearMemory([]);
-                  setState(() {});
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                  decoration: BoxDecoration(
-                      color: C.red.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
-                  child: Text('Clear All', style: TextStyle(color: C.red, fontSize: 12, fontWeight: FontWeight.w600)),
-                ),
-              ),
+            Text(title, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: C.ink)),
           ]),
         ),
         Divider(height: 1, color: C.border),
-        Expanded(
-          child: memory.isEmpty
-              ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.memory_rounded, color: C.ink2, size: 32),
-                  const SizedBox(height: 10),
-                  Text('No memories yet', style: TextStyle(color: C.ink2, fontSize: 14)),
-                  const SizedBox(height: 6),
-                  Text('SkyGen will remember useful info from your chats.',
-                      style: TextStyle(color: C.ink2, fontSize: 12), textAlign: TextAlign.center),
-                ]))
-              : ListView.separated(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: memory.length,
-                  separatorBuilder: (_, __) => Divider(height: 1, color: C.border),
-                  itemBuilder: (_, i) => Padding(
+        Expanded(child: child),
+        SizedBox(height: MediaQuery.of(context).padding.bottom + 12),
+      ]),
+    );
+  }
+
+  Widget _memoryPage() {
+    final mem = widget.aiMemory;
+    return _subPageShell(
+      title: 'Manage Memory',
+      onBack: () => setState(() => _showMemory = false),
+      child: mem.isEmpty
+          ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.memory_rounded, color: C.ink2, size: 32),
+              const SizedBox(height: 10),
+              Text('No memories yet', style: TextStyle(color: C.ink2, fontSize: 14)),
+              const SizedBox(height: 6),
+              Padding(padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Text('SkyGen will remember important info from your chats.',
+                    style: TextStyle(color: C.ink2, fontSize: 12), textAlign: TextAlign.center)),
+            ]))
+          : Column(children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+                child: Row(children: [
+                  Text('${mem.length} item${mem.length > 1 ? "s" : ""}',
+                      style: TextStyle(fontSize: 12, color: C.ink2)),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: () { widget.onClearMemory([]); setState(() {}); HapticFeedback.mediumImpact(); },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                          color: C.red.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
+                      child: Text('Clear All', style: TextStyle(color: C.red, fontSize: 12, fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+                ]),
+              ),
+              Expanded(child: ListView.separated(
+                padding: const EdgeInsets.all(16),
+                itemCount: mem.length,
+                separatorBuilder: (_, __) => Divider(height: 1, color: C.border),
+                itemBuilder: (_, i) => AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 10),
-                    child: Row(children: [
-                      Icon(Icons.circle, size: 6, color: C.accent),
-                      const SizedBox(width: 12),
-                      Expanded(child: Text(memory[i],
-                          style: TextStyle(fontSize: 13, color: C.ink))),
+                    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Container(
+                        width: 6, height: 6, margin: const EdgeInsets.only(top: 6, right: 12),
+                        decoration: BoxDecoration(color: C.accent, shape: BoxShape.circle),
+                      ),
+                      Expanded(child: Text(mem[i], style: TextStyle(fontSize: 13, color: C.ink, height: 1.4))),
                       GestureDetector(
                         onTap: () {
                           HapticFeedback.lightImpact();
-                          final updated = List<String>.from(memory)..removeAt(i);
-                          widget.onClearMemory(updated);
+                          final upd = List<String>.from(mem)..removeAt(i);
+                          widget.onClearMemory(upd);
                           setState(() {});
                         },
                         child: Icon(Icons.close_rounded, size: 16, color: C.ink2),
@@ -1709,142 +1832,119 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                     ]),
                   ),
                 ),
-        ),
-        SizedBox(height: MediaQuery.of(context).padding.bottom + 12),
-      ]),
-    );
-  }
-
-  Widget _buildAboutPage() {
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.6,
-      decoration: BoxDecoration(
-        color: C.card,
-        borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(20), topRight: Radius.circular(20)),
-      ),
-      child: Column(children: [
-        Container(
-          margin: const EdgeInsets.only(top: 12, bottom: 4),
-          width: 36, height: 4,
-          decoration: BoxDecoration(color: C.border, borderRadius: BorderRadius.circular(3)),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-          child: Row(children: [
-            GestureDetector(
-              onTap: () { setState(() => _showAbout = false); },
-              child: Icon(Icons.arrow_back_rounded, color: C.ink, size: 22),
-            ),
-            const SizedBox(width: 12),
-            Text('About App', style: TextStyle(
-                fontSize: 16, fontWeight: FontWeight.w800, color: C.ink)),
-          ]),
-        ),
-        Divider(height: 1, color: C.border),
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Center(child: _LogoCircle(size: 64)),
-              const SizedBox(height: 16),
-              Center(child: Text('SkyGen', style: TextStyle(
-                  fontSize: 22, fontWeight: FontWeight.w800, color: C.ink))),
-              Center(child: Text('English AI Tutor',
-                  style: TextStyle(fontSize: 13, color: C.ink2))),
-              const SizedBox(height: 20),
-              _AboutItem(icon: Icons.school_rounded,
-                  title: 'What it does',
-                  desc: 'SkyGen is your personal English tutor — grammar, translation, vocabulary, SSC/HSC prep, and more.'),
-              _AboutItem(icon: Icons.auto_fix_high_rounded,
-                  title: 'Key Features',
-                  desc: 'Grammar correction • Translation • Tense learning • Essay & letter writing • Image text analysis • Voice reading'),
-              _AboutItem(icon: Icons.memory_rounded,
-                  title: 'Smart Memory',
-                  desc: 'SkyGen remembers important info about you across sessions for a personalized experience.'),
-              _AboutItem(icon: Icons.code_rounded,
-                  title: 'Developer',
-                  desc: 'MD. Jaid Bin Siyam — Hyper Squad\n@BD_Prime_Minister'),
-              const SizedBox(height: 8),
-              Center(child: Text('Version 1.0.0',
-                  style: TextStyle(fontSize: 11, color: C.ink2))),
+              )),
             ]),
-          ),
-        ),
-        SizedBox(height: MediaQuery.of(context).padding.bottom + 12),
-      ]),
     );
   }
-}
 
-class _SettingsTile extends StatelessWidget {
-  final IconData icon;
-  final String   title;
-  final Widget?  trailing;
-  final Color?   iconColor;
-  final Color?   textColor;
-  final VoidCallback onTap;
-
-  const _SettingsTile({
-    required this.icon, required this.title, required this.onTap,
-    this.trailing, this.iconColor, this.textColor,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-        child: Row(children: [
-          Icon(icon, size: 18, color: iconColor ?? C.ink2),
-          const SizedBox(width: 14),
-          Expanded(child: Text(title, style: TextStyle(
-              fontSize: 14, color: textColor ?? C.ink, fontWeight: FontWeight.w500))),
-          trailing ?? Icon(Icons.chevron_right_rounded, size: 18, color: C.ink2),
+  Widget _aboutPage() {
+    return _subPageShell(
+      title: 'About App', heightFactor: 0.72,
+      onBack: () => setState(() => _showAbout = false),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Center(child: _LogoCircle(size: 64)),
+          const SizedBox(height: 14),
+          Center(child: Text('SkyGen', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: C.ink))),
+          Center(child: Text('English AI Tutor', style: TextStyle(fontSize: 12, color: C.ink2))),
+          const SizedBox(height: 20),
+          _aboutItem(Icons.school_rounded, 'What is SkyGen?',
+              'SkyGen is a powerful AI-powered English tutor built specifically for Bangladeshi students. It helps with grammar, translation, vocabulary, writing, and exam prep — all in one place.'),
+          _aboutItem(Icons.auto_fix_high_rounded, 'Key Features',
+              '• Grammar correction & explanation\n• English ↔ Bengali translation\n• All 12 tenses with full breakdown\n• Essay, letter & application writing\n• SSC / HSC board exam preparation\n• Image text analysis (OCR)\n• Voice reading (TTS)\n• Smart AI memory across sessions'),
+          _aboutItem(Icons.memory_rounded, 'Smart Memory',
+              'SkyGen remembers important information about you — like your class, learning goals, and preferences — so every conversation feels personalized.'),
+          _aboutItem(Icons.language_rounded, 'Language Support',
+              'SkyGen mirrors your language naturally. Chat in Bengali, English, or Banglish — SkyGen will respond the same way.'),
+          _aboutItem(Icons.verified_rounded, 'Accuracy',
+              'While SkyGen strives for accuracy, it can occasionally make mistakes. Always double-check important answers, especially for exams.'),
+          const SizedBox(height: 8),
+          Center(child: Text('Version 1.0.0', style: TextStyle(fontSize: 11, color: C.ink2))),
         ]),
       ),
     );
   }
-}
 
-class _AboutItem extends StatelessWidget {
-  final IconData icon;
-  final String   title;
-  final String   desc;
-  const _AboutItem({required this.icon, required this.title, required this.desc});
+  Widget _devPage() {
+    return _subPageShell(
+      title: 'Developer', heightFactor: 0.75,
+      onBack: () => setState(() => _showDev = false),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Center(child: _LogoCircle(size: 64, url: kDevUrl)),
+          const SizedBox(height: 14),
+          Center(child: Text('MD. Jaid Bin Siyam', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: C.ink))),
+          Center(child: Text('Student & Developer · Hyper Squad', style: TextStyle(fontSize: 12, color: C.ink2))),
+          const SizedBox(height: 22),
+          _aboutItem(Icons.person_rounded, 'About',
+              'A passionate developer from Bangladesh, currently a student. Builds apps, websites, Telegram bots, and automation tools alongside his studies — driven by curiosity and a love for technology.'),
+          _aboutItem(Icons.code_rounded, 'What he does',
+              '• Flutter & mobile app development\n• Web development & backend systems\n• Telegram bot development\n• Automation & scripting\n• AI-powered tools and products'),
+          _aboutItem(Icons.stars_rounded, 'SkyGen',
+              'SkyGen is one of his personal projects — built to help fellow students master English with the help of AI. Every feature is crafted with care.'),
+          const SizedBox(height: 16),
+          Text('Contact', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: C.ink)),
+          const SizedBox(height: 10),
+          _contactBtn(Icons.telegram, 'Telegram', kDevTg),
+          const SizedBox(height: 8),
+          _contactBtn(Icons.chat_rounded, 'WhatsApp', kDevWa),
+        ]),
+      ),
+    );
+  }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _aboutItem(IconData icon, String title, String desc) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Container(
-          width: 34, height: 34,
-          decoration: BoxDecoration(
-              color: C.accentL, borderRadius: BorderRadius.circular(9)),
-          child: Icon(icon, color: C.accent, size: 16),
-        ),
+        Container(width: 34, height: 34,
+          decoration: BoxDecoration(color: C.accentL, borderRadius: BorderRadius.circular(9)),
+          child: Icon(icon, color: C.accent, size: 16)),
         const SizedBox(width: 12),
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title, style: TextStyle(
-              fontSize: 13, fontWeight: FontWeight.w700, color: C.ink)),
+          Text(title, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: C.ink)),
           const SizedBox(height: 3),
-          Text(desc, style: TextStyle(fontSize: 12, color: C.ink2, height: 1.45)),
+          Text(desc, style: TextStyle(fontSize: 12, color: C.ink2, height: 1.5)),
         ])),
       ]),
     );
   }
+
+  Widget _contactBtn(IconData icon, String label, String url) {
+    return Material(
+      color: C.bg, borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () async {
+          HapticFeedback.lightImpact();
+          final uri = Uri.parse(url);
+          if (await canLaunchUrl(uri)) launchUrl(uri, mode: LaunchMode.externalApplication);
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+              border: Border.all(color: C.border), borderRadius: BorderRadius.circular(12)),
+          child: Row(children: [
+            Icon(icon, size: 18, color: C.accent),
+            const SizedBox(width: 12),
+            Text(label, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: C.ink)),
+            const Spacer(),
+            Icon(Icons.open_in_new_rounded, size: 14, color: C.ink2),
+          ]),
+        ),
+      ),
+    );
+  }
 }
 
-// ══════════════════════════════════════════════════════════════
-// 10. SCROLL FAB
-// ══════════════════════════════════════════════════════════════
-
+// ═══════════════════════════════════════════════════
+// 11. SCROLL FAB
+// ═══════════════════════════════════════════════════
 class _ScrollFab extends StatelessWidget {
   final VoidCallback onTap;
   const _ScrollFab({required this.onTap});
-
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
@@ -1854,8 +1954,7 @@ class _ScrollFab extends StatelessWidget {
         decoration: BoxDecoration(
           color: C.card, shape: BoxShape.circle,
           border: Border.all(color: C.border, width: 1.5),
-          boxShadow: [BoxShadow(
-              color: Colors.black.withOpacity(0.10),
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1),
               blurRadius: 10, offset: const Offset(0, 2))],
         ),
         child: Icon(Icons.keyboard_double_arrow_down_rounded, color: C.ink, size: 20),
@@ -1864,58 +1963,42 @@ class _ScrollFab extends StatelessWidget {
   }
 }
 
-// ══════════════════════════════════════════════════════════════
-// 11. IMAGE FULL SCREEN VIEWER
-// ══════════════════════════════════════════════════════════════
-
+// ═══════════════════════════════════════════════════
+// 12. IMAGE VIEWER
+// ═══════════════════════════════════════════════════
 class _ImageViewerPage extends StatefulWidget {
   final String imageUrl;
   const _ImageViewerPage({required this.imageUrl});
-
   @override
-  State<_ImageViewerPage> createState() => _ImageViewerPageState();
+  State<_ImageViewerPage> createState() => _ImageViewerState();
 }
-
-class _ImageViewerPageState extends State<_ImageViewerPage> {
-  final _transform = TransformationController();
-
+class _ImageViewerState extends State<_ImageViewerPage> {
+  final _tc = TransformationController();
   @override
-  void dispose() { _transform.dispose(); super.dispose(); }
-
+  void dispose() { _tc.dispose(); super.dispose(); }
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        iconTheme: const IconThemeData(color: Colors.white),
-        leading: IconButton(
-          icon: const Icon(Icons.close_rounded),
-          onPressed: () => Navigator.pop(context),
+      appBar: AppBar(backgroundColor: Colors.black,
+          iconTheme: const IconThemeData(color: Colors.white),
+          leading: IconButton(icon: const Icon(Icons.close_rounded),
+              onPressed: () => Navigator.pop(context))),
+      body: Center(child: InteractiveViewer(
+        transformationController: _tc, minScale: 0.5, maxScale: 5.0,
+        child: CachedNetworkImage(
+          imageUrl: widget.imageUrl, fit: BoxFit.contain,
+          placeholder: (_, __) => const Center(child: CircularProgressIndicator(color: Colors.white)),
+          errorWidget: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white, size: 48),
         ),
-      ),
-      body: Center(
-        child: InteractiveViewer(
-          transformationController: _transform,
-          minScale: 0.5, maxScale: 5.0,
-          child: CachedNetworkImage(
-            imageUrl: widget.imageUrl,
-            fit: BoxFit.contain,
-            placeholder: (_, __) => const Center(
-                child: CircularProgressIndicator(color: Colors.white)),
-            errorWidget: (_, __, ___) =>
-                const Icon(Icons.broken_image, color: Colors.white, size: 48),
-          ),
-        ),
-      ),
+      )),
     );
   }
 }
 
-// ══════════════════════════════════════════════════════════════
-// 12. BUBBLE WIDGET
-// ══════════════════════════════════════════════════════════════
-
+// ═══════════════════════════════════════════════════
+// 13. BUBBLE WIDGET
+// ═══════════════════════════════════════════════════
 class _BubbleWidget extends StatefulWidget {
   final ChatMsg msg;
   final bool    isPlayingTTS;
@@ -1927,112 +2010,92 @@ class _BubbleWidget extends StatefulWidget {
   final void Function(String)         onImageTap;
 
   const _BubbleWidget({
-    super.key,
-    required this.msg, required this.isPlayingTTS, required this.isTTSLoading,
+    super.key, required this.msg, required this.isPlayingTTS, required this.isTTSLoading,
     required this.onSpeak, required this.onCopy, required this.onLike,
     required this.onDislike, required this.onImageTap,
   });
-
   @override
   State<_BubbleWidget> createState() => _BubbleState();
 }
 
-class _BubbleState extends State<_BubbleWidget>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _fadeCtrl;
-  late Animation<double>   _fadeAnim;
-  bool _copiedFlash = false;
+class _BubbleState extends State<_BubbleWidget> with SingleTickerProviderStateMixin {
+  late AnimationController _fc;
+  late Animation<double>   _fa;
+  bool _copied = false;
 
   @override
   void initState() {
     super.initState();
-    _fadeCtrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 250));
-    _fadeAnim = CurvedAnimation(parent: _fadeCtrl, curve: Curves.easeOut);
-    // Show action bar immediately for already-completed messages (loaded from storage)
+    _fc = AnimationController(vsync: this, duration: const Duration(milliseconds: 250));
+    _fa = CurvedAnimation(parent: _fc, curve: Curves.easeOut);
+    // Show actions immediately for already-completed messages
     if (widget.msg.type == MsgType.ai && widget.msg.status == GenStatus.completed) {
-      _fadeCtrl.value = 1.0;
+      _fc.value = 1.0;
     }
   }
 
   @override
   void didUpdateWidget(_BubbleWidget old) {
     super.didUpdateWidget(old);
-    // Animate in when streaming completes
     if (widget.msg.status == GenStatus.completed &&
         old.msg.status != GenStatus.completed &&
         widget.msg.type == MsgType.ai) {
-      _fadeCtrl.forward();
+      _fc.forward();
     }
   }
 
   @override
-  void dispose() { _fadeCtrl.dispose(); super.dispose(); }
+  void dispose() { _fc.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
-    final isUser = widget.msg.type == MsgType.user;
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
-      child: isUser ? _buildUser() : _buildAI(),
+      child: widget.msg.type == MsgType.user ? _user() : _ai(),
     );
   }
 
-  Widget _buildUser() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.end,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Flexible(child: GestureDetector(
-          // Long press = silent copy, no toast
-          onLongPress: () {
-            if (widget.msg.text.isNotEmpty) {
-              widget.onCopy(widget.msg.text);
-              HapticFeedback.mediumImpact();
-            }
-          },
-          child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            if (widget.msg.imgUrls?.isNotEmpty == true)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Wrap(
-                  spacing: 6, runSpacing: 6, alignment: WrapAlignment.end,
-                  children: widget.msg.imgUrls!.map((url) =>
-                    GestureDetector(
-                      onTap: () => widget.onImageTap(url),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
-                        child: CachedNetworkImage(
-                          imageUrl: url, width: 108, height: 108, fit: BoxFit.cover,
-                          placeholder: (_, __) =>
-                              Container(width: 108, height: 108, color: C.border),
-                        ),
-                      ),
-                    )).toList(),
-                ),
+  Widget _user() => Row(
+    mainAxisAlignment: MainAxisAlignment.end,
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [Flexible(child: GestureDetector(
+      onLongPress: () {
+        if (widget.msg.text.isNotEmpty) {
+          widget.onCopy(widget.msg.text);
+          HapticFeedback.mediumImpact();
+        }
+      },
+      child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+        if (widget.msg.imgUrls?.isNotEmpty == true)
+          Padding(padding: const EdgeInsets.only(bottom: 6),
+            child: Wrap(spacing: 6, runSpacing: 6, alignment: WrapAlignment.end,
+              children: widget.msg.imgUrls!.map((url) => GestureDetector(
+                onTap: () => widget.onImageTap(url),
+                child: ClipRRect(borderRadius: BorderRadius.circular(10),
+                  child: CachedNetworkImage(imageUrl: url, width: 108, height: 108, fit: BoxFit.cover,
+                    placeholder: (_, __) => Container(width: 108, height: 108, color: C.border))),
+              )).toList(),
+            ),
+          ),
+        if (widget.msg.text.isNotEmpty)
+          Container(
+            constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.72),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: C.userBub,
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(16), topRight: Radius.circular(4),
+                bottomLeft: Radius.circular(16), bottomRight: Radius.circular(16),
               ),
-            if (widget.msg.text.isNotEmpty)
-              Container(
-                constraints: BoxConstraints(
-                    maxWidth: MediaQuery.of(context).size.width * 0.72),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
-                  color: C.userBub,
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(16), topRight: Radius.circular(4),
-                    bottomLeft: Radius.circular(16), bottomRight: Radius.circular(16),
-                  ),
-                ),
-                child: Text(widget.msg.text,
-                    style: TextStyle(fontSize: 14.5, color: C.ink, height: 1.45)),
-              ),
-          ]),
-        )),
-      ],
-    );
-  }
+            ),
+            child: Text(widget.msg.text,
+                style: TextStyle(fontSize: 14.5, color: C.ink, height: 1.45)),
+          ),
+      ]),
+    ))],
+  );
 
-  Widget _buildAI() {
+  Widget _ai() {
     final isWaiting = widget.msg.status == GenStatus.waiting ||
         (widget.msg.status == GenStatus.streaming && widget.msg.visibleText.isEmpty);
     final isDone = widget.msg.status == GenStatus.completed;
@@ -2043,17 +2106,13 @@ class _BubbleState extends State<_BubbleWidget>
       else ...[
         if (widget.msg.visibleText.isNotEmpty)
           Container(
-            constraints: BoxConstraints(
-                maxWidth: MediaQuery.of(context).size.width * 0.92),
+            constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.92),
             child: MarkdownBody(
-              data: widget.msg.visibleText,
-              selectable: true,
+              data: widget.msg.visibleText, selectable: true,
               styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-                p: TextStyle(fontSize: 14.5, color: C.ink, height: 1.55),
-                code: TextStyle(fontSize: 13, fontFamily: 'monospace',
-                    backgroundColor: C.bg, color: C.accent),
-                codeblockDecoration: BoxDecoration(
-                    color: C.bg, borderRadius: BorderRadius.circular(10)),
+                p: TextStyle(fontSize: 14.5, color: C.ink, height: 1.6),
+                code: TextStyle(fontSize: 13, fontFamily: 'monospace', backgroundColor: C.bg, color: C.accent),
+                codeblockDecoration: BoxDecoration(color: C.bg, borderRadius: BorderRadius.circular(10)),
                 h1: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: C.ink),
                 h2: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink),
                 h3: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700, color: C.ink),
@@ -2064,7 +2123,6 @@ class _BubbleState extends State<_BubbleWidget>
               ),
             ),
           ),
-
         if (widget.msg.status == GenStatus.error)
           Container(
             margin: const EdgeInsets.only(top: 6),
@@ -2074,134 +2132,93 @@ class _BubbleState extends State<_BubbleWidget>
                 border: Border.all(color: C.red.withOpacity(0.2))),
             child: Text(widget.msg.text, style: TextStyle(color: C.red, fontSize: 13)),
           ),
-
         if (isDone && widget.msg.text.isNotEmpty)
           FadeTransition(
-            opacity: _fadeAnim,
+            opacity: _fa,
             child: Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: _AIActionBar(
-                msg: widget.msg,
-                isPlayingTTS: widget.isPlayingTTS,
-                isTTSLoading: widget.isTTSLoading,
-                copiedFlash: _copiedFlash,
-                onCopy: () {
-                  widget.onCopy(widget.msg.text);
-                  HapticFeedback.lightImpact();
-                  setState(() => _copiedFlash = true);
-                  Future.delayed(const Duration(milliseconds: 1300), () {
-                    if (mounted) setState(() => _copiedFlash = false);
-                  });
-                },
-                onSpeak:   () => widget.onSpeak(widget.msg.id, widget.msg.text),
-                onLike:    () { widget.onLike(widget.msg.id); HapticFeedback.lightImpact(); },
-                onDislike: () { widget.onDislike(widget.msg.id); HapticFeedback.lightImpact(); },
-              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                _aBtn(
+                  icon:  _copied ? Icons.check_rounded : Icons.copy_rounded,
+                  color: _copied ? C.green : C.ink2,
+                  tip:   'Copy',
+                  onTap: () {
+                    widget.onCopy(widget.msg.text);
+                    HapticFeedback.lightImpact();
+                    setState(() => _copied = true);
+                    Future.delayed(const Duration(milliseconds: 1300),
+                        () { if (mounted) setState(() => _copied = false); });
+                  },
+                ),
+                widget.isTTSLoading
+                    ? SizedBox(width: 30, height: 30,
+                        child: Center(child: SizedBox(width: 13, height: 13,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: C.ink2))))
+                    : _aBtn(
+                        icon:  widget.isPlayingTTS ? Icons.pause_rounded : Icons.volume_up_rounded,
+                        color: widget.isPlayingTTS ? C.accent : C.ink2,
+                        tip:   widget.isPlayingTTS ? 'Pause' : 'Listen',
+                        onTap: () => widget.onSpeak(widget.msg.id, widget.msg.text),
+                      ),
+                _aBtn(icon: Icons.thumb_up_rounded,
+                    color: widget.msg.liked    ? C.accent : C.ink2, tip: 'Like',
+                    onTap: () { widget.onLike(widget.msg.id); HapticFeedback.lightImpact(); }),
+                _aBtn(icon: Icons.thumb_down_rounded,
+                    color: widget.msg.disliked ? C.red    : C.ink2, tip: 'Dislike',
+                    onTap: () { widget.onDislike(widget.msg.id); HapticFeedback.lightImpact(); }),
+              ]),
             ),
           ),
       ],
     ]);
   }
-}
 
-// ── AI Action bar ─────────────────────────────────────────────
-class _AIActionBar extends StatelessWidget {
-  final ChatMsg  msg;
-  final bool     isPlayingTTS;
-  final bool     isTTSLoading;
-  final bool     copiedFlash;
-  final VoidCallback onCopy, onSpeak, onLike, onDislike;
-
-  const _AIActionBar({
-    required this.msg, required this.isPlayingTTS, required this.isTTSLoading,
-    required this.copiedFlash, required this.onCopy, required this.onSpeak,
-    required this.onLike, required this.onDislike,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(mainAxisSize: MainAxisSize.min, children: [
-      _Btn(
-        icon:  copiedFlash ? Icons.check_rounded : Icons.copy_rounded,
-        color: copiedFlash ? C.green : C.ink2, onTap: onCopy,
-      ),
-      isTTSLoading
-          ? SizedBox(width: 30, height: 30,
-              child: Center(child: SizedBox(width: 13, height: 13,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: C.ink2))))
-          : _Btn(
-              icon:  isPlayingTTS ? Icons.pause_rounded : Icons.volume_up_rounded,
-              color: isPlayingTTS ? C.accent : C.ink2, onTap: onSpeak,
-            ),
-      _Btn(icon: Icons.thumb_up_rounded,
-          color: msg.liked    ? C.accent : C.ink2, onTap: onLike),
-      _Btn(icon: Icons.thumb_down_rounded,
-          color: msg.disliked ? C.red    : C.ink2, onTap: onDislike),
-    ]);
-  }
-}
-
-class _Btn extends StatelessWidget {
-  final IconData icon;
-  final Color    color;
-  final VoidCallback onTap;
-  const _Btn({required this.icon, required this.color, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(8), onTap: onTap,
-        child: Container(width: 30, height: 30,
-            alignment: Alignment.center,
-            child: Icon(icon, size: 15, color: color)),
+  Widget _aBtn({required IconData icon, required Color color,
+      required String tip, required VoidCallback onTap}) {
+    return Tooltip(
+      message: tip,
+      child: Material(color: Colors.transparent,
+        child: InkWell(borderRadius: BorderRadius.circular(8), onTap: onTap,
+          child: Container(width: 30, height: 30, alignment: Alignment.center,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 200),
+                child: Icon(icon, key: ValueKey(icon), size: 15, color: color),
+              ))),
       ),
     );
   }
 }
 
-// ══════════════════════════════════════════════════════════════
-// 13. THINKING DOTS ANIMATION
-// ══════════════════════════════════════════════════════════════
-
+// ═══════════════════════════════════════════════════
+// 14. THINKING DOTS
+// ═══════════════════════════════════════════════════
 class _ThinkingDots extends StatefulWidget {
   const _ThinkingDots();
   @override
-  State<_ThinkingDots> createState() => _ThinkingDotsState();
+  State<_ThinkingDots> createState() => _TDState();
 }
-
-class _ThinkingDotsState extends State<_ThinkingDots>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _ctrl;
-
+class _TDState extends State<_ThinkingDots> with SingleTickerProviderStateMixin {
+  late AnimationController _c;
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 900))
-      ..repeat();
+    _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 900))..repeat();
   }
-
   @override
-  void dispose() { _ctrl.dispose(); super.dispose(); }
-
+  void dispose() { _c.dispose(); super.dispose(); }
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: AnimatedBuilder(
-        animation: _ctrl,
-        builder: (_, __) => Row(
-          mainAxisSize: MainAxisSize.min,
+        animation: _c,
+        builder: (_, __) => Row(mainAxisSize: MainAxisSize.min,
           children: List.generate(3, (i) {
-            final t = ((_ctrl.value - i * 0.2) % 1.0).clamp(0.0, 1.0);
-            final y = sin(t * pi) * 5.0;
+            final t = ((_c.value - i * 0.2) % 1.0).clamp(0.0, 1.0);
             return Transform.translate(
-              offset: Offset(0, -y),
+              offset: Offset(0, -sin(t * pi) * 5.0),
               child: Container(
-                width: 7, height: 7,
-                margin: const EdgeInsets.only(right: 5),
+                width: 7, height: 7, margin: const EdgeInsets.only(right: 5),
                 decoration: BoxDecoration(
                   color: C.accent.withOpacity(0.45 + 0.55 * sin(t * pi)),
                   shape: BoxShape.circle,
