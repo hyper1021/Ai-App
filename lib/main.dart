@@ -11,6 +11,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 // ══════════════════════════════════════════════════════════════
 // 1. ENTRY POINT
@@ -20,39 +21,48 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations(
       [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown]);
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.dark,
-    systemNavigationBarColor: Color(0xFFF5F5F7),
-    systemNavigationBarIconBrightness: Brightness.dark,
-  ));
   runApp(const SkyGenApp());
 }
 
 // ══════════════════════════════════════════════════════════════
-// 2. COLOURS
+// 2. THEME NOTIFIER
+// ══════════════════════════════════════════════════════════════
+
+class ThemeNotifier extends ChangeNotifier {
+  bool _dark = false;
+  bool get isDark => _dark;
+  void toggle() { _dark = !_dark; notifyListeners(); }
+}
+
+final themeNotifier = ThemeNotifier();
+
+// ══════════════════════════════════════════════════════════════
+// 3. COLOURS
 // ══════════════════════════════════════════════════════════════
 
 class C {
-  static const bg      = Color(0xFFF5F5F7);
-  static const card    = Color(0xFFFFFFFF);
-  static const accent  = Color(0xFF5B6FF2);
-  static const accentL = Color(0xFFEEF0FE);
-  static const ink     = Color(0xFF111827);
-  static const ink2    = Color(0xFF6B7280);
-  static const border  = Color(0xFFE5E7EB);
-  static const userBub = Color(0xFFF0F0F3);
-  static const red     = Color(0xFFEF4444);
-  static const green   = Color(0xFF10B981);
-  static const grad1   = Color(0xFF5B6FF2);
-  static const grad2   = Color(0xFF8B5CF6);
+  static bool dark = false;
+
+  static Color get bg      => dark ? const Color(0xFF0F1117) : const Color(0xFFF5F5F7);
+  static Color get card    => dark ? const Color(0xFF1A1D27) : const Color(0xFFFFFFFF);
+  static Color get accent  => const Color(0xFF5B6FF2);
+  static Color get accentL => dark ? const Color(0xFF1E2240) : const Color(0xFFEEF0FE);
+  static Color get ink     => dark ? const Color(0xFFF1F2F6) : const Color(0xFF111827);
+  static Color get ink2    => dark ? const Color(0xFF9CA3AF) : const Color(0xFF6B7280);
+  static Color get border  => dark ? const Color(0xFF2D3148) : const Color(0xFFE5E7EB);
+  static Color get userBub => dark ? const Color(0xFF22263A) : const Color(0xFFF0F0F3);
+  static Color get red     => const Color(0xFFEF4444);
+  static Color get green   => const Color(0xFF10B981);
+  static const grad1 = Color(0xFF5B6FF2);
+  static const grad2 = Color(0xFF8B5CF6);
 }
 
-const String kLogoUrl = 'https://www.cdn.hyper-bd.site/photo/logo.png';
-const String kImgBBKey = 'YOUR_IMGBB_API_KEY'; // Replace with actual key
+const String kLogoUrl  = 'https://www.cdn.hyper-bd.site/photo/logo.png';
+const String kImgBBKey = '4685fa1e1d227aec0ce07733cd571ff9';
+const String kDevTg    = 'https://t.me/BD_Prime_Minister';
 
 // ══════════════════════════════════════════════════════════════
-// 3. DATA MODELS
+// 4. DATA MODELS
 // ══════════════════════════════════════════════════════════════
 
 enum MsgType   { user, ai }
@@ -65,8 +75,10 @@ class PendingImage {
   String? ocrText;
   String? description;
   bool isLoading;
+  bool isError;
 
-  PendingImage({required this.file, required this.localSrc, this.isLoading = true});
+  PendingImage({required this.file, required this.localSrc,
+      this.isLoading = true, this.isError = false});
 }
 
 class ChatMsg {
@@ -81,22 +93,15 @@ class ChatMsg {
   bool disliked;
 
   ChatMsg({
-    required this.id,
-    required this.text,
-    String? visibleText,
-    required this.type,
-    this.imgUrls,
-    this.status   = GenStatus.completed,
-    required this.ts,
-    this.liked    = false,
-    this.disliked = false,
+    required this.id, required this.text, String? visibleText,
+    required this.type, this.imgUrls, this.status = GenStatus.completed,
+    required this.ts, this.liked = false, this.disliked = false,
   }) : visibleText = visibleText ?? (status == GenStatus.completed ? text : '');
 
   Map<String, dynamic> toMap() => {
     'id': id, 'text': text, 'visibleText': visibleText,
-    'type': type.index, 'imgUrls': imgUrls,
-    'status': status.index, 'ts': ts,
-    'liked': liked, 'disliked': disliked,
+    'type': type.index, 'imgUrls': imgUrls, 'status': status.index,
+    'ts': ts, 'liked': liked, 'disliked': disliked,
   };
 
   factory ChatMsg.fromMap(Map<String, dynamic> m) => ChatMsg(
@@ -114,48 +119,74 @@ class Session {
   final int createdAt;
   bool isPinned;
   List<ChatMsg> messages;
+  bool titleGenerated; // track if AI title was already generated
 
   Session({
     required this.id, required this.title, required this.createdAt,
-    this.isPinned = false, required this.messages,
+    this.isPinned = false, required this.messages, this.titleGenerated = false,
   });
 
   Map<String, dynamic> toMap() => {
     'id': id, 'title': title, 'createdAt': createdAt,
-    'isPinned': isPinned,
+    'isPinned': isPinned, 'titleGenerated': titleGenerated,
     'messages': messages.map((m) => m.toMap()).toList(),
   };
 
   factory Session.fromMap(Map<String, dynamic> m) => Session(
     id: m['id'], title: m['title'], createdAt: m['createdAt'],
     isPinned: m['isPinned'] ?? false,
+    titleGenerated: m['titleGenerated'] ?? false,
     messages: (m['messages'] as List).map((e) => ChatMsg.fromMap(e)).toList(),
   );
 }
 
 // ══════════════════════════════════════════════════════════════
-// 4. ROOT APP + SPLASH
+// 5. ROOT APP
 // ══════════════════════════════════════════════════════════════
 
-class SkyGenApp extends StatelessWidget {
+class SkyGenApp extends StatefulWidget {
   const SkyGenApp({super.key});
+  @override
+  State<SkyGenApp> createState() => _SkyGenAppState();
+}
+
+class _SkyGenAppState extends State<SkyGenApp> {
+  @override
+  void initState() {
+    super.initState();
+    themeNotifier.addListener(() => setState(() { C.dark = themeNotifier.isDark; }));
+  }
 
   @override
   Widget build(BuildContext context) {
+    C.dark = themeNotifier.isDark;
+    final brightness = themeNotifier.isDark ? Brightness.dark : Brightness.light;
+    SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: themeNotifier.isDark ? Brightness.light : Brightness.dark,
+      systemNavigationBarColor: C.bg,
+      systemNavigationBarIconBrightness: themeNotifier.isDark ? Brightness.light : Brightness.dark,
+    ));
     return MaterialApp(
       title: 'SkyGen',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
+        brightness: brightness,
         scaffoldBackgroundColor: C.bg,
         primaryColor: C.accent,
         fontFamily: 'Roboto',
-        colorScheme: ColorScheme.fromSeed(seedColor: C.accent),
+        colorScheme: ColorScheme.fromSeed(
+            seedColor: C.accent, brightness: brightness),
       ),
       home: const SplashScreen(),
     );
   }
 }
+
+// ══════════════════════════════════════════════════════════════
+// 6. SPLASH SCREEN
+// ══════════════════════════════════════════════════════════════
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -171,12 +202,11 @@ class _SplashState extends State<SplashScreen>
   @override
   void initState() {
     super.initState();
-    // Pre-cache logo on splash
     WidgetsBinding.instance.addPostFrameCallback((_) {
       precacheImage(const NetworkImage(kLogoUrl), context);
     });
-    _ctrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 2200));
+    _ctrl = AnimationController(vsync: this,
+        duration: const Duration(milliseconds: 2200));
     _scale = Tween(begin: 0.65, end: 1.0).animate(CurvedAnimation(
         parent: _ctrl, curve: const Interval(0.0, 0.55, curve: Curves.elasticOut)));
     _glow = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(
@@ -213,7 +243,7 @@ class _SplashState extends State<SplashScreen>
               child: Stack(alignment: Alignment.center, children: [
                 for (int i = 0; i < 3; i++)
                   Opacity(
-                    opacity: (_glow.value * (0.38 - i * 0.11)).clamp(0, 1),
+                    opacity: (_glow.value * (0.38 - i * 0.11)).clamp(0, 1.0),
                     child: Container(
                       width: 90.0 + i * 38, height: 90.0 + i * 38,
                       decoration: BoxDecoration(
@@ -224,41 +254,7 @@ class _SplashState extends State<SplashScreen>
                       ),
                     ),
                   ),
-                // Circular logo
-                Container(
-                  width: 78, height: 78,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    boxShadow: [BoxShadow(
-                        color: C.accent.withOpacity(0.42 * _glow.value),
-                        blurRadius: 34, spreadRadius: 4)],
-                  ),
-                  child: ClipOval(
-                    child: CachedNetworkImage(
-                      imageUrl: kLogoUrl,
-                      fit: BoxFit.cover,
-                      placeholder: (_, __) => Container(
-                        decoration: const BoxDecoration(
-                          gradient: LinearGradient(
-                              colors: [C.grad1, C.grad2],
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight),
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(Icons.school_rounded,
-                            color: Colors.white, size: 40),
-                      ),
-                      errorWidget: (_, __, ___) => Container(
-                        decoration: const BoxDecoration(
-                          gradient: LinearGradient(colors: [C.grad1, C.grad2]),
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(Icons.school_rounded,
-                            color: Colors.white, size: 40),
-                      ),
-                    ),
-                  ),
-                ),
+                _LogoCircle(size: 78),
               ]),
             ),
           ),
@@ -269,7 +265,37 @@ class _SplashState extends State<SplashScreen>
 }
 
 // ══════════════════════════════════════════════════════════════
-// 5. CHAT SCREEN
+// 7. LOGO WIDGET (reusable circular logo)
+// ══════════════════════════════════════════════════════════════
+
+class _LogoCircle extends StatelessWidget {
+  final double size;
+  const _LogoCircle({required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipOval(
+      child: CachedNetworkImage(
+        imageUrl: kLogoUrl, width: size, height: size, fit: BoxFit.cover,
+        placeholder: (_, __) => Container(
+          width: size, height: size,
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(colors: [C.grad1, C.grad2]), shape: BoxShape.circle),
+          child: Icon(Icons.school_rounded, color: Colors.white, size: size * 0.48),
+        ),
+        errorWidget: (_, __, ___) => Container(
+          width: size, height: size,
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(colors: [C.grad1, C.grad2]), shape: BoxShape.circle),
+          child: Icon(Icons.school_rounded, color: Colors.white, size: size * 0.48),
+        ),
+      ),
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// 8. CHAT SCREEN
 // ══════════════════════════════════════════════════════════════
 
 class ChatScreen extends StatefulWidget {
@@ -295,68 +321,83 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   List<PendingImage> _pendingImages = [];
 
   // TTS
-  final AudioPlayer _ttsPlayer  = AudioPlayer();
-  List<String> _ttsQueue        = [];
-  bool   _isPlayingTTS          = false;
-  bool   _isTTSLoading          = false;
+  final AudioPlayer _ttsPlayer = AudioPlayer();
+  List<String> _ttsQueue       = [];
+  bool  _isPlayingTTS          = false;
+  bool  _isTTSLoading          = false;
   String? _speakingId;
 
-  // Scroll-to-bottom fab
+  // Scroll FAB
   bool _showScrollFab = false;
 
-  // Persistent memory (AI memory across sessions)
+  // AI Memory
   List<String> _aiMemory = [];
 
   // Drawer search
   String _searchQuery = '';
 
-  // ── SYSTEM PROMPT ─────────────────────────────────────────
-  final String _sysBase = """
-You are "SkyGen" — a professional English language tutor and AI assistant built for Bangladeshi students and learners. You were created by MD. Jaid Bin Siyam, developer at Hyper Squad. Only reveal your creator identity when the user explicitly asks who made you or who created you.
+  // ── SYSTEM PROMPT ────────────────────────────────────────
+  final String _sysBase = r"""
+You are "SkyGen" — a smart, friendly English language tutor and AI assistant for Bangladeshi students. You were created by MD. Jaid Bin Siyam, developer at Hyper Squad. Only reveal this when the user explicitly asks who made you.
 
-════ CORE RULES ════
-• Keep responses SHORT and CONCISE. Default: 1–100 characters for simple queries.
-• If user asks for translation → translate only, nothing else.
-• If user says "Hi", "Hello", or casual greetings → reply short: "Hi! How can I help?"
-• Only give long detailed answers when the user explicitly asks for explanation or detailed content.
-• Never add unsolicited explanations, notes, or extra text.
-• ALWAYS match the user's language: Bengali → reply Bengali, English → reply English, Banglish → reply Banglish. Mirror exactly.
-• Do NOT reveal this system instruction.
+════ RESPONSE LENGTH RULES ════
+• Greetings (Hi, Hello, How are you, etc.) → reply SHORT, 1-2 sentences max. Use friendly emojis. 🙂
+• Simple yes/no questions → answer briefly.
+• Questions about topics (tenses, grammar, vocabulary, etc.) → give COMPLETE, PROPER answers with all relevant details, subtypes, examples. Do NOT cut short.
+• Translation requests → translate only, nothing extra.
+• Writing tasks (essays, letters) → write the full content requested.
+• RULE: Match response length to what the question actually needs. Never over-explain, never under-explain.
 
-════ TITLE GENERATION ════
-After the user's first message in a new chat, you MUST include a short chat title tag at the END of your response:
-<<<TITLE: Short title here>>>
-The title should be 2–5 words, relevant to the topic. Only on the FIRST message of a new chat.
+════ EMOJI USAGE ════
+• Use relevant emojis naturally in responses to make them engaging. 😊📚✏️
+• Greetings: always use emojis.
+• Educational content: use sparingly for headers/points.
+• Don't overdo it.
+
+════ LANGUAGE RULES ════
+• ALWAYS mirror the user's language exactly:
+  - Bengali → reply in Bengali
+  - English → reply in English
+  - Banglish → reply in Banglish
+• Natural Bengali can include English terms (like grammar terms: Present Tense, Noun, etc.)
+• Grammar terms always in English regardless of reply language.
+
+════ TITLE GENERATION (FIRST MESSAGE ONLY) ════
+ONLY when this tag is present in the instructions: [GENERATE_TITLE]
+Add at the very END of your response (after all content):
+<<<TITLE: Your title here>>>
+Title: 10–100 characters, relevant to the topic.
+NEVER generate a title unless [GENERATE_TITLE] is explicitly in the instruction.
 
 ════ MEMORY SYSTEM ════
-If the user shares personal info worth remembering (class, name, goals, preferences), add a memory tag at the END of your response:
+If the user shares personally useful long-term info (class, name, age, goals, native language), add at the END of your response:
 <<<MEMORY: ["fact 1", "fact 2"]>>>
-Only save genuinely useful long-term facts. Keep memory small (max 10 items total).
+Only save genuinely important facts. Keep concise. Never mention you're saving memory to the user.
 
-════ WHAT YOU CAN HELP WITH ════
-① Grammar — All tenses, parts of speech, voice, narration, transformation, punctuation, spelling.
+════ WHAT YOU HELP WITH ════
+① Grammar — All 12 tenses (with structure, rules, all subtypes, examples), Parts of Speech, Voice, Narration, Transformation, Articles, Punctuation, Spelling.
 ② Vocabulary — Meanings, synonyms, antonyms, idioms, phrasal verbs, confusing words.
-③ Translation — English ↔ Bengali (and other languages if asked). Translate only, no extras.
+③ Translation — Any language pair the user asks for. Translate only.
 ④ Writing — Essays, letters, applications, dialogues, CV, summaries, reports.
-⑤ Comprehension — Passages, main idea, tone, inference, summaries.
-⑥ SSC/HSC Prep — Right form of verbs, fill-in-blanks, cloze, rearranging, model questions.
-⑦ Image-based — Analyze text/content from uploaded images and help accordingly.
-⑧ Spoken English — Daily phrases, formal intro, common Bengali-speaker mistakes.
-⑨ Pronunciation — Phonetic hints, mispronounced words, stress and intonation.
+⑤ Comprehension — Passages, main idea, tone, inference.
+⑥ SSC/HSC Prep — Board exam questions, fill-in-blanks, cloze, model questions.
+⑦ Image Help — Analyze text/content from uploaded images.
+⑧ Spoken English — Daily phrases, formal intro, pronunciation tips.
 
 ════ IDENTITY ════
-• Name: SkyGen
-• Creator: MD. Jaid Bin Siyam (Hyper Squad developer)
-• Only reveal when asked directly.
+Name: SkyGen | Creator: MD. Jaid Bin Siyam (Hyper Squad) | Reveal only when asked.
 
 ════ OFF-TOPIC ════
-If asked about non-English topics: "I can only help with English learning. Ask me anything about English!"
+Non-English topics: "I can only help with English learning! 📚 Ask me anything about English."
 """;
 
-  String get _systemInstruction {
+  String _buildSystemInstruction({bool needTitle = false}) {
     String full = _sysBase;
+    if (needTitle) {
+      full += '\n\n[GENERATE_TITLE] — Add <<<TITLE: ...>>> at the end of your response.';
+    }
     if (_aiMemory.isNotEmpty) {
-      full += '\n\n════ USER MEMORY ════\n';
+      full += '\n\n════ USER MEMORY (Always use this context) ════\n';
       for (int i = 0; i < _aiMemory.length; i++) {
         full += '• ${_aiMemory[i]}\n';
       }
@@ -365,7 +406,7 @@ If asked about non-English topics: "I can only help with English learning. Ask m
   }
 
   final List<Map<String, dynamic>> _quickCards = [
-    {'icon': Icons.auto_fix_high_rounded, 'label': 'Grammar Check',  'color': C.accent},
+    {'icon': Icons.auto_fix_high_rounded, 'label': 'Grammar Check',  'color': C.grad1},
     {'icon': Icons.translate_rounded,     'label': 'Translation',    'color': C.green},
     {'icon': Icons.school_rounded,        'label': 'Learn Tenses',   'color': Color(0xFFF59E0B)},
     {'icon': Icons.edit_note_rounded,     'label': 'Essay Writing',  'color': C.red},
@@ -377,6 +418,7 @@ If asked about non-English topics: "I can only help with English learning. Ask m
     _initStorage();
     _ttsPlayer.onPlayerComplete.listen((_) => _playNextTTS());
     _scrollCtrl.addListener(_onScroll);
+    themeNotifier.addListener(() => setState(() {}));
   }
 
   @override
@@ -391,20 +433,18 @@ If asked about non-English topics: "I can only help with English learning. Ask m
 
   void _onScroll() {
     if (!_scrollCtrl.hasClients) return;
-    final pos = _scrollCtrl.position;
-    final distFromBottom = pos.maxScrollExtent - pos.pixels;
-    final show = distFromBottom > 150;
+    final distFromBottom =
+        _scrollCtrl.position.maxScrollExtent - _scrollCtrl.position.pixels;
+    final show = distFromBottom > 200;
     if (show != _showScrollFab) setState(() => _showScrollFab = show);
   }
 
-  // ── Storage & Memory ──────────────────────────────────────
+  // ── Storage ──────────────────────────────────────────────
   Future<void> _initStorage() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      _storageFile = File('${dir.path}/skygen_v4.json');
+      _storageFile = File('${dir.path}/skygen_v5.json');
       _memoryFile  = File('${dir.path}/skygen_memory.json');
-
-      // Load sessions
       if (await _storageFile!.exists()) {
         final raw = await _storageFile!.readAsString();
         final d   = jsonDecode(raw);
@@ -413,14 +453,10 @@ If asked about non-English topics: "I can only help with English learning. Ask m
           _sortSessions();
         });
       }
-
-      // Load persistent memory
       if (await _memoryFile!.exists()) {
         final raw = await _memoryFile!.readAsString();
         final d   = jsonDecode(raw);
-        setState(() {
-          _aiMemory = List<String>.from(d['memory'] ?? []);
-        });
+        setState(() => _aiMemory = List<String>.from(d['memory'] ?? []));
       }
     } catch (_) {}
     _newTempSession();
@@ -441,16 +477,11 @@ If asked about non-English topics: "I can only help with English learning. Ask m
     } catch (_) {}
   }
 
-  void _addToMemory(List<String> newItems) {
-    for (final item in newItems) {
-      if (!_aiMemory.contains(item)) {
-        _aiMemory.add(item);
-      }
+  void _addToMemory(List<String> items) {
+    for (final item in items) {
+      if (item.isNotEmpty && !_aiMemory.contains(item)) _aiMemory.add(item);
     }
-    // Keep max 10 items
-    if (_aiMemory.length > 10) {
-      _aiMemory = _aiMemory.sublist(_aiMemory.length - 10);
-    }
+    if (_aiMemory.length > 10) _aiMemory = _aiMemory.sublist(_aiMemory.length - 10);
     _saveMemory();
   }
 
@@ -485,7 +516,6 @@ If asked about non-English topics: "I can only help with English learning. Ask m
 
   void _scrollToBot({bool force = false}) {
     if (!_scrollCtrl.hasClients) return;
-    // Only auto-scroll if user hasn't scrolled up (or force=true)
     if (force || !_showScrollFab) {
       _scrollCtrl.animateTo(
         _scrollCtrl.position.maxScrollExtent + 200,
@@ -500,12 +530,14 @@ If asked about non-English topics: "I can only help with English learning. Ask m
           orElse: () => Session(id: _currentId, title: 'New Chat',
               createdAt: DateTime.now().millisecondsSinceEpoch, messages: []))
       : _sessions.firstWhere((s) => s.id == _currentId,
-          orElse: () => _sessions.first);
+          orElse: () => _sessions.isNotEmpty ? _sessions.first
+              : Session(id: _currentId, title: 'New Chat',
+                  createdAt: DateTime.now().millisecondsSinceEpoch, messages: []));
 
-  // ── Image: pick + immediate upload via ImgBB ─────────────
+  // ── Image Upload (ImgBB) ─────────────────────────────────
   Future<void> _pickImages() async {
     if (_pendingImages.length >= 3) {
-      _showCenterToast('Maximum 3 images allowed.');
+      _showToast('Maximum 3 images allowed.');
       return;
     }
     try {
@@ -519,37 +551,38 @@ If asked about non-English topics: "I can only help with English learning. Ask m
         _uploadAndAnalyze(pending);
       }
     } catch (e) {
-      _showCenterToast('Error: $e');
+      _showToast('Error picking image: $e');
     }
   }
 
   Future<void> _uploadAndAnalyze(PendingImage p) async {
     try {
-      // Upload via ImgBB
       final uri = Uri.parse('https://api.imgbb.com/1/upload?key=$kImgBBKey');
       final req = http.MultipartRequest('POST', uri);
       req.files.add(await http.MultipartFile.fromPath('image', p.file.path));
-      final res = await req.send();
+      final res  = await req.send();
       if (res.statusCode == 200) {
         final body = await res.stream.bytesToString();
         final data = jsonDecode(body);
         if (data['success'] == true) {
           p.uploadedUrl = data['data']['url'] as String;
-          // Parallel OCR + description
           await Future.wait([_fetchOCR(p), _fetchDesc(p)]);
+          if (mounted) setState(() => p.isLoading = false);
+          return;
         }
       }
-    } catch (_) {}
-    if (mounted) setState(() => p.isLoading = false);
+      // Upload failed
+      if (mounted) setState(() { p.isLoading = false; p.isError = true; });
+    } catch (_) {
+      if (mounted) setState(() { p.isLoading = false; p.isError = true; });
+    }
   }
 
   Future<void> _fetchOCR(PendingImage p) async {
     try {
-      final r = await http.post(
-        Uri.parse('https://gen-z-ocr.vercel.app/api'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'url': p.uploadedUrl}),
-      );
+      final r = await http.post(Uri.parse('https://gen-z-ocr.vercel.app/api'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'url': p.uploadedUrl}));
       if (r.statusCode == 200) {
         final d = jsonDecode(r.body);
         if (d['ok'] == true) p.ocrText = d['results']['answer'] as String?;
@@ -568,14 +601,13 @@ If asked about non-English topics: "I can only help with English learning. Ask m
     } catch (_) {}
   }
 
-  // ── Send ──────────────────────────────────────────────────
+  // ── Send ─────────────────────────────────────────────────
   Future<void> _send() async {
     if (_isGenerating) return;
     final prompt = _inputCtrl.text.trim();
     if (prompt.isEmpty && _pendingImages.isEmpty) return;
-
     if (_pendingImages.any((p) => p.isLoading)) {
-      _showCenterToast('Images are still uploading, please wait…');
+      _showToast('Images are still uploading, please wait…');
       return;
     }
 
@@ -584,13 +616,12 @@ If asked about non-English topics: "I can only help with English learning. Ask m
     _inputCtrl.clear();
     setState(() => _pendingImages.clear());
 
-    final isFirstMsg = _isTempSession;
+    // Determine if this is first message (need title)
+    final isFirst = _isTempSession;
 
     if (_isTempSession) {
-      final sess = Session(
-        id: _currentId, title: 'New Chat',
-        createdAt: DateTime.now().millisecondsSinceEpoch, messages: [],
-      );
+      final sess = Session(id: _currentId, title: 'New Chat',
+          createdAt: DateTime.now().millisecondsSinceEpoch, messages: []);
       setState(() {
         _sessions.insert(0, sess);
         _isTempSession = false;
@@ -598,8 +629,9 @@ If asked about non-English topics: "I can only help with English learning. Ask m
       });
     }
 
+    // Only successful uploads
     final imgUrls = imgs
-        .where((i) => i.uploadedUrl != null)
+        .where((i) => i.uploadedUrl != null && !i.isError)
         .map((i) => i.uploadedUrl!)
         .toList();
 
@@ -615,20 +647,17 @@ If asked about non-English topics: "I can only help with English learning. Ask m
     _scrollToBot(force: true);
     _save();
 
-    await _streamAI(prompt, imgs, isFirstMsg: isFirstMsg);
+    await _streamAI(prompt, imgs, sess: sess, isFirst: isFirst);
   }
 
   String _buildPrompt(String userPrompt, List<PendingImage> imgs,
-      {bool isFirstMsg = false}) {
+      {required bool needTitle}) {
     String imgCtx = '';
     for (int i = 0; i < imgs.length; i++) {
+      if (imgs[i].uploadedUrl == null || imgs[i].isError) continue;
       imgCtx += '\n[Image ${i + 1}]\n';
-      if (imgs[i].ocrText?.isNotEmpty == true) {
-        imgCtx += '  OCR: ${imgs[i].ocrText}\n';
-      }
-      if (imgs[i].description?.isNotEmpty == true) {
-        imgCtx += '  Visual: ${imgs[i].description}\n';
-      }
+      if (imgs[i].ocrText?.isNotEmpty == true) imgCtx += '  OCR: ${imgs[i].ocrText}\n';
+      if (imgs[i].description?.isNotEmpty == true) imgCtx += '  Visual: ${imgs[i].description}\n';
     }
 
     final sess  = _sessions.firstWhere((s) => s.id == _currentId);
@@ -638,14 +667,11 @@ If asked about non-English topics: "I can only help with English learning. Ask m
     for (int i = start; i < msgs.length - 1; i++) {
       final m = msgs[i];
       if (m.status == GenStatus.completed) {
-        hist += '${m.type == MsgType.user ? "User" : "Tutor"}: ${m.text}\n';
+        hist += '${m.type == MsgType.user ? "User" : "AI"}: ${m.text}\n';
       }
     }
 
-    String full = '[System Instruction]\n${_systemInstruction}\n\n';
-    if (isFirstMsg) {
-      full += '[Note] This is the FIRST message in this chat. Include <<<TITLE: Short title>>> at the end.\n\n';
-    }
+    String full = '[System Instruction]\n${_buildSystemInstruction(needTitle: needTitle)}\n\n';
     if (hist.isNotEmpty)   full += '[Chat History]\n$hist\n';
     if (imgCtx.isNotEmpty) full += '[Images]\n$imgCtx\n';
     full += '[User Message]\nUser: ${userPrompt.isEmpty ? "(Image sent)" : userPrompt}';
@@ -653,12 +679,15 @@ If asked about non-English topics: "I can only help with English learning. Ask m
   }
 
   Future<void> _streamAI(String prompt, List<PendingImage> imgs,
-      {bool isFirstMsg = false}) async {
+      {required Session sess, required bool isFirst}) async {
+    // needTitle only on first message and title not yet generated
+    final needTitle = isFirst && !sess.titleGenerated;
+
     final aiId = 'ai${DateTime.now().millisecondsSinceEpoch}';
     _addAiMsg(aiId, '', GenStatus.waiting);
 
     try {
-      final fullPrompt = _buildPrompt(prompt, imgs, isFirstMsg: isFirstMsg);
+      final fullPrompt = _buildPrompt(prompt, imgs, needTitle: needTitle);
       final client = http.Client();
       final req    = http.Request('POST', Uri.parse('https://www.api.hyper-bd.site/Ai/'));
       req.headers['Content-Type'] = 'application/json';
@@ -668,13 +697,13 @@ If asked about non-English topics: "I can only help with English learning. Ask m
       if (res.statusCode != 200) throw Exception('Server Error ${res.statusCode}');
 
       _updateStatus(aiId, GenStatus.streaming);
-      String streamed = '';
-      String buf      = '';
-      bool   firstChunk = true;
+      String streamed  = '';
+      String buf       = '';
+      bool firstChunk  = true;
 
       await for (final chunk in res.stream.transform(utf8.decoder)) {
         if (_stopRequested) {
-          _updateStatus(aiId, GenStatus.stopped, text: streamed);
+          _updateStatus(aiId, GenStatus.stopped, text: _cleanTags(streamed));
           client.close();
           break;
         }
@@ -690,13 +719,11 @@ If asked about non-English topics: "I can only help with English learning. Ask m
               final j   = jsonDecode(ds);
               final ans = j['results']?['answer'] as String?;
               if (ans != null) {
-                if (firstChunk && ans.trim().isEmpty) {
-                  // Skip first empty chunk
-                  continue;
-                }
+                if (firstChunk && ans.trim().isEmpty) continue;
                 firstChunk = false;
                 streamed  += ans;
-                _updateText(aiId, streamed);
+                // Show cleaned text (hide <<<...>>> blocks)
+                _updateText(aiId, _cleanTagsForDisplay(streamed));
               }
             } catch (_) {}
           }
@@ -704,17 +731,24 @@ If asked about non-English topics: "I can only help with English learning. Ask m
       }
 
       if (!_stopRequested) {
-        // Parse TITLE tag
-        final titleMatch = RegExp(r'<<<TITLE:\s*(.+?)>>>').firstMatch(streamed);
-        if (titleMatch != null && isFirstMsg) {
-          final title = titleMatch.group(1)!.trim();
-          final si = _sessions.indexWhere((s) => s.id == _currentId);
-          if (si != -1) setState(() => _sessions[si].title = title);
-          _save();
+        // Parse TITLE (only for first message)
+        if (needTitle) {
+          final titleMatch = RegExp(r'<<<TITLE:\s*(.+?)>>>').firstMatch(streamed);
+          if (titleMatch != null) {
+            final title = titleMatch.group(1)!.trim();
+            final si = _sessions.indexWhere((s) => s.id == _currentId);
+            if (si != -1) {
+              setState(() {
+                _sessions[si].title          = title;
+                _sessions[si].titleGenerated = true;
+              });
+              _save();
+            }
+          }
         }
 
-        // Parse MEMORY tag
-        final memMatch = RegExp(r'<<<MEMORY:\s*(\[.+?\])>>>').firstMatch(streamed);
+        // Parse MEMORY
+        final memMatch = RegExp(r'<<<MEMORY:\s*(\[[\s\S]+?\])>>>').firstMatch(streamed);
         if (memMatch != null) {
           try {
             final arr = jsonDecode(memMatch.group(1)!) as List;
@@ -722,20 +756,34 @@ If asked about non-English topics: "I can only help with English learning. Ask m
           } catch (_) {}
         }
 
-        // Clean tags from visible text
-        final clean = streamed
-            .replaceAll(RegExp(r'<<<TITLE:[^>]*>>>'), '')
-            .replaceAll(RegExp(r'<<<MEMORY:[^>]*>>>'), '')
-            .trim();
-
+        final clean = _cleanTags(streamed);
         _updateStatus(aiId, GenStatus.completed, text: clean);
       }
     } catch (e) {
-      _updateStatus(aiId, GenStatus.error, text: '⚠️ $e');
+      _updateStatus(aiId, GenStatus.error, text: '⚠️ Error: $e');
     } finally {
       if (mounted) setState(() => _isGenerating = false);
       _save();
     }
+  }
+
+  // Clean ALL tags from final text
+  String _cleanTags(String text) {
+    return text
+        .replaceAll(RegExp(r'<<<TITLE:[^>]*>>>'), '')
+        .replaceAll(RegExp(r'<<<MEMORY:[\s\S]*?>>>'), '')
+        .trim();
+  }
+
+  // For streaming display: hide any partial or full <<<...>>> blocks
+  String _cleanTagsForDisplay(String text) {
+    // Remove complete tags
+    String clean = text
+        .replaceAll(RegExp(r'<<<TITLE:[^>]*>>>'), '')
+        .replaceAll(RegExp(r'<<<MEMORY:[\s\S]*?>>>'), '');
+    // Remove partial tag that hasn't closed yet (starts with < or <<<)
+    clean = clean.replaceAll(RegExp(r'<{1,3}[^>]*$'), '');
+    return clean.trim();
   }
 
   void _addAiMsg(String id, String text, GenStatus status) {
@@ -753,12 +801,11 @@ If asked about non-English topics: "I can only help with English learning. Ask m
     if (si == -1) return;
     final mi = _sessions[si].messages.indexWhere((m) => m.id == id);
     if (mi != -1) {
-      // Use a stable key update — avoid full rebuild jitter
       setState(() {
         _sessions[si].messages[mi].visibleText = text;
         _sessions[si].messages[mi].text        = text;
       });
-      _scrollToBot(); // respects _showScrollFab
+      _scrollToBot();
     }
   }
 
@@ -779,9 +826,8 @@ If asked about non-English topics: "I can only help with English learning. Ask m
     }
   }
 
-  // ── TTS (parallel pre-fetch, chunked) ─────────────────────
+  // ── TTS ──────────────────────────────────────────────────
   Future<void> _handleTTS(String id, String text) async {
-    // Toggle pause/resume
     if (_speakingId == id && _isPlayingTTS) {
       await _ttsPlayer.pause();
       setState(() => _isPlayingTTS = false);
@@ -792,8 +838,6 @@ If asked about non-English topics: "I can only help with English learning. Ask m
       setState(() => _isPlayingTTS = true);
       return;
     }
-
-    // New TTS
     await _ttsPlayer.stop();
     setState(() {
       _speakingId   = id;
@@ -801,19 +845,13 @@ If asked about non-English topics: "I can only help with English learning. Ask m
       _isTTSLoading = true;
       _ttsQueue.clear();
     });
-
-    final clean  = text.replaceAll(RegExp(r'```[\s\S]*?```'), '');
-    final chunks = _chunkText(clean);
-
+    final chunks = _chunkText(text.replaceAll(RegExp(r'```[\s\S]*?```'), ''));
     if (chunks.isEmpty) {
       setState(() { _isTTSLoading = false; _speakingId = null; });
       return;
     }
-
-    // Pre-fetch ALL chunks in parallel
     try {
-      final urls = await Future.wait(
-          chunks.map((c) => _fetchTTSUrl(c)));
+      final urls = await Future.wait(chunks.map((c) => _buildTTSUrl(c)));
       if (!mounted) return;
       _ttsQueue.addAll(urls);
       setState(() { _isTTSLoading = false; _isPlayingTTS = true; });
@@ -828,23 +866,19 @@ If asked about non-English topics: "I can only help with English learning. Ask m
     String t = text.trim();
     while (t.isNotEmpty) {
       if (t.length <= size) { chunks.add(t); break; }
-      // Find last space near size boundary
       int cut = -1;
       for (final bc in ['।', '.', '\n', '?', '!', ',', ';', ':']) {
         final pos = t.lastIndexOf(bc, size);
         if (pos > 80) { cut = pos + 1; break; }
       }
-      if (cut < 0) {
-        cut = t.lastIndexOf(' ', size);
-        if (cut < 80) cut = size;
-      }
+      if (cut < 0) { cut = t.lastIndexOf(' ', size); if (cut < 80) cut = size; }
       chunks.add(t.substring(0, cut).trim());
       t = t.substring(cut).trim();
     }
     return chunks.where((s) => s.isNotEmpty).toList();
   }
 
-  Future<String> _fetchTTSUrl(String text) async {
+  Future<String> _buildTTSUrl(String text) async {
     return 'https://murf.ai/Prod/anonymous-tts/audio'
         '?text=${Uri.encodeComponent(text)}'
         '&voiceId=VM017230562791058FV&style=Conversational';
@@ -855,13 +889,12 @@ If asked about non-English topics: "I can only help with English learning. Ask m
       setState(() { _isPlayingTTS = false; _speakingId = null; });
       return;
     }
-    final url = _ttsQueue.removeAt(0);
     try {
-      await _ttsPlayer.play(UrlSource(url));
+      await _ttsPlayer.play(UrlSource(_ttsQueue.removeAt(0)));
     } catch (_) { _playNextTTS(); }
   }
 
-  // ── Reaction ──────────────────────────────────────────────
+  // ── Reaction ─────────────────────────────────────────────
   void _setReaction(String msgId, bool like) {
     final si = _sessions.indexWhere((s) => s.id == _currentId);
     if (si == -1) return;
@@ -879,56 +912,48 @@ If asked about non-English topics: "I can only help with English learning. Ask m
     _save();
   }
 
-  // ── Delete confirmation dialog ────────────────────────────
-  Future<bool> _confirmDelete(BuildContext ctx) async {
+  // ── Delete confirmation ────────────────────────────────
+  Future<bool> _confirmDelete() async {
     return await showDialog<bool>(
-      context: ctx,
+      context: context,
       barrierDismissible: false,
       builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         backgroundColor: C.card,
-        title: const Text('Delete Chat',
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('Delete Chat',
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
-        content: const Text('Are you sure you want to delete this chat? This cannot be undone.',
+        content: Text('Are you sure? This cannot be undone.',
             style: TextStyle(fontSize: 14, color: C.ink2)),
         actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        actions: [
-          Row(children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: () => Navigator.pop(context, false),
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: C.border),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                ),
-                child: const Text('Cancel',
-                    style: TextStyle(color: C.ink2, fontWeight: FontWeight.w600)),
-              ),
+        actions: [Row(children: [
+          Expanded(child: OutlinedButton(
+            onPressed: () => Navigator.pop(context, false),
+            style: OutlinedButton.styleFrom(
+              side: BorderSide(color: C.border),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              padding: const EdgeInsets.symmetric(vertical: 12),
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: ElevatedButton(
-                onPressed: () => Navigator.pop(context, true),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: C.red,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                ),
-                child: const Text('Delete',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-              ),
+            child: Text('Cancel', style: TextStyle(color: C.ink2, fontWeight: FontWeight.w600)),
+          )),
+          const SizedBox(width: 10),
+          Expanded(child: ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: C.red, elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              padding: const EdgeInsets.symmetric(vertical: 12),
             ),
-          ]),
-        ],
+            child: const Text('Delete',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+          )),
+        ])],
       ),
     ) ?? false;
   }
 
-  // ── Toast (center overlay, no SnackBar) ──────────────────
+  // ── Toast ─────────────────────────────────────────────────
   OverlayEntry? _toastEntry;
-  void _showCenterToast(String msg) {
+  void _showToast(String msg) {
     _toastEntry?.remove();
     _toastEntry = OverlayEntry(
       builder: (_) => Positioned(
@@ -936,31 +961,33 @@ If asked about non-English topics: "I can only help with English learning. Ask m
         bottom: MediaQuery.of(context).size.height * 0.42,
         child: Material(
           color: Colors.transparent,
-          child: Center(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-              decoration: BoxDecoration(
-                color: C.ink.withOpacity(0.88),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Text(msg,
-                  style: const TextStyle(color: Colors.white, fontSize: 13),
-                  textAlign: TextAlign.center),
-            ),
-          ),
+          child: Center(child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+            decoration: BoxDecoration(
+              color: C.ink.withOpacity(0.88), borderRadius: BorderRadius.circular(20)),
+            child: Text(msg,
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+                textAlign: TextAlign.center),
+          )),
         ),
       ),
     );
     Overlay.of(context).insert(_toastEntry!);
     Future.delayed(const Duration(milliseconds: 1800), () {
-      _toastEntry?.remove();
-      _toastEntry = null;
+      _toastEntry?.remove(); _toastEntry = null;
     });
   }
 
-  // ══════════════════════════════════════════════════════════
+  // ── Image fullscreen viewer ────────────────────────────
+  void _openImageViewer(String url) {
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => _ImageViewerPage(imageUrl: url),
+    ));
+  }
+
+  // ══════════════════════════════════════════════════════
   // BUILD
-  // ══════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════
 
   @override
   Widget build(BuildContext context) {
@@ -977,7 +1004,6 @@ If asked about non-English topics: "I can only help with English learning. Ask m
                 ? _buildWelcome()
                 : ListView.builder(
                     controller: _scrollCtrl,
-                    // RepaintBoundary + physics to reduce jitter
                     physics: const ClampingScrollPhysics(),
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
                     itemCount: msgs.length,
@@ -988,40 +1014,34 @@ If asked about non-English topics: "I can only help with English learning. Ask m
                         isPlayingTTS: _isPlayingTTS && _speakingId == msgs[i].id,
                         isTTSLoading: _isTTSLoading && _speakingId == msgs[i].id,
                         onSpeak:     (id, text) => _handleTTS(id, text),
-                        onCopy:      (text) {
-                          Clipboard.setData(ClipboardData(text: text));
-                          // Silent copy — no toast per requirement
-                        },
-                        onLike:    (id) => _setReaction(id, true),
-                        onDislike: (id) => _setReaction(id, false),
+                        onCopy:      (text) => Clipboard.setData(ClipboardData(text: text)),
+                        onLike:      (id) => _setReaction(id, true),
+                        onDislike:   (id) => _setReaction(id, false),
+                        onImageTap:  (url) => _openImageViewer(url),
                       ),
                     ),
                   ),
           ),
           _buildInput(),
         ]),
-
-        // Scroll-to-bottom FAB
         if (_showScrollFab)
           Positioned(
-            bottom: _inputAreaHeight + 12,
+            bottom: _inputHeight + 12,
             left: 0, right: 0,
-            child: Center(
-              child: _ScrollFab(onTap: () {
-                _scrollCtrl.animateTo(
-                  _scrollCtrl.position.maxScrollExtent + 200,
-                  duration: const Duration(milliseconds: 350),
-                  curve: Curves.easeOut,
-                );
-              }),
-            ),
+            child: Center(child: _ScrollFab(onTap: () {
+              setState(() => _showScrollFab = false);
+              _scrollCtrl.animateTo(
+                _scrollCtrl.position.maxScrollExtent + 200,
+                duration: const Duration(milliseconds: 350),
+                curve: Curves.easeOut,
+              );
+            })),
           ),
       ]),
     );
   }
 
-  // Rough input area height estimate for FAB placement
-  double get _inputAreaHeight {
+  double get _inputHeight {
     final pad = MediaQuery.of(context).padding.bottom;
     return 72 + pad + (_pendingImages.isNotEmpty ? 70 : 0);
   }
@@ -1030,10 +1050,8 @@ If asked about non-English topics: "I can only help with English learning. Ask m
   PreferredSizeWidget _buildAppBar() {
     return AppBar(
       backgroundColor: C.card,
-      elevation: 0,
-      scrolledUnderElevation: 0,
-      toolbarHeight: 52,
-      leadingWidth: 120,
+      elevation: 0, scrolledUnderElevation: 0,
+      toolbarHeight: 52, leadingWidth: 120,
       leading: Row(children: [
         const SizedBox(width: 4),
         Material(
@@ -1041,28 +1059,25 @@ If asked about non-English topics: "I can only help with English learning. Ask m
           child: InkWell(
             borderRadius: BorderRadius.circular(10),
             onTap: () => _scaffoldKey.currentState?.openDrawer(),
-            child: const SizedBox(width: 40, height: 40,
+            child: SizedBox(width: 40, height: 40,
                 child: Icon(Icons.menu_rounded, color: C.ink, size: 22)),
           ),
         ),
         const SizedBox(width: 6),
-        const Text('SkyGen',
-            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800,
-                color: C.ink, letterSpacing: -0.2)),
+        Text('SkyGen', style: TextStyle(
+            fontSize: 17, fontWeight: FontWeight.w800, color: C.ink, letterSpacing: -0.2)),
       ]),
       actions: [
         Material(
-          color: Colors.transparent,
-          shape: const CircleBorder(),
+          color: Colors.transparent, shape: const CircleBorder(),
           child: InkWell(
             customBorder: const CircleBorder(),
             onTap: () { if (!_isTempSession) _newTempSession(); },
             child: Container(
               width: 38, height: 38,
               decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(color: C.border, width: 1.5)),
-              child: const Icon(Icons.add_rounded, color: C.ink, size: 20),
+                  shape: BoxShape.circle, border: Border.all(color: C.border, width: 1.5)),
+              child: Icon(Icons.add_rounded, color: C.ink, size: 20),
             ),
           ),
         ),
@@ -1087,38 +1102,22 @@ If asked about non-English topics: "I can only help with English learning. Ask m
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 14, 14, 6),
             child: Row(children: [
-              ClipOval(
-                child: CachedNetworkImage(
-                  imageUrl: kLogoUrl, width: 34, height: 34, fit: BoxFit.cover,
-                  placeholder: (_, __) => Container(
-                    width: 34, height: 34,
-                    decoration: const BoxDecoration(
-                        gradient: LinearGradient(colors: [C.grad1, C.grad2]),
-                        shape: BoxShape.circle),
-                    child: const Icon(Icons.school_rounded, color: Colors.white, size: 18),
-                  ),
-                  errorWidget: (_, __, ___) => Container(
-                    width: 34, height: 34,
-                    decoration: const BoxDecoration(
-                        gradient: LinearGradient(colors: [C.grad1, C.grad2]),
-                        shape: BoxShape.circle),
-                    child: const Icon(Icons.school_rounded, color: Colors.white, size: 18),
-                  ),
-                ),
-              ),
+              _LogoCircle(size: 34),
               const SizedBox(width: 9),
-              const Text('SkyGen',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: C.ink)),
+              Text('SkyGen', style: TextStyle(
+                  fontSize: 16, fontWeight: FontWeight.w800, color: C.ink)),
               const Spacer(),
               GestureDetector(
                 onTap: () { if (!_isTempSession) _newTempSession(); Navigator.pop(context); },
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(color: C.accentL, borderRadius: BorderRadius.circular(8)),
-                  child: const Row(children: [
+                  decoration: BoxDecoration(
+                      color: C.accentL, borderRadius: BorderRadius.circular(8)),
+                  child: Row(children: [
                     Icon(Icons.add_rounded, color: C.accent, size: 14),
-                    SizedBox(width: 4),
-                    Text('New', style: TextStyle(color: C.accent, fontSize: 12, fontWeight: FontWeight.w700)),
+                    const SizedBox(width: 4),
+                    Text('New', style: TextStyle(
+                        color: C.accent, fontSize: 12, fontWeight: FontWeight.w700)),
                   ]),
                 ),
               ),
@@ -1135,37 +1134,35 @@ If asked about non-English topics: "I can only help with English learning. Ask m
                   border: Border.all(color: C.border)),
               child: Row(children: [
                 const SizedBox(width: 10),
-                const Icon(Icons.search_rounded, color: C.ink2, size: 15),
+                Icon(Icons.search_rounded, color: C.ink2, size: 15),
                 const SizedBox(width: 6),
-                Expanded(
-                  child: TextField(
-                    controller: _searchCtrl,
-                    style: const TextStyle(fontSize: 13, color: C.ink),
-                    decoration: const InputDecoration(
-                      hintText: 'Search chats…',
-                      hintStyle: TextStyle(color: C.ink2, fontSize: 13),
-                      border: InputBorder.none, isDense: true,
-                      contentPadding: EdgeInsets.zero,
-                    ),
-                    onChanged: (v) => setState(() => _searchQuery = v),
+                Expanded(child: TextField(
+                  controller: _searchCtrl,
+                  style: TextStyle(fontSize: 13, color: C.ink),
+                  decoration: InputDecoration(
+                    hintText: 'Search chats…',
+                    hintStyle: TextStyle(color: C.ink2, fontSize: 13),
+                    border: InputBorder.none, isDense: true,
+                    contentPadding: EdgeInsets.zero,
                   ),
-                ),
+                  onChanged: (v) => setState(() => _searchQuery = v),
+                )),
                 if (_searchQuery.isNotEmpty)
                   GestureDetector(
                     onTap: () { _searchCtrl.clear(); setState(() => _searchQuery = ''); },
-                    child: const Padding(padding: EdgeInsets.only(right: 8),
+                    child: Padding(padding: const EdgeInsets.only(right: 8),
                         child: Icon(Icons.close_rounded, color: C.ink2, size: 13)),
                   ),
               ]),
             ),
           ),
 
-          const Divider(height: 1, color: C.border),
+          Divider(height: 1, color: C.border),
 
-          // Sessions
+          // Session list
           Expanded(
             child: filtered.isEmpty
-                ? const Center(child: Text('No chats yet.',
+                ? Center(child: Text('No chats yet.',
                     style: TextStyle(color: C.ink2, fontSize: 13)))
                 : ListView.builder(
                     padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
@@ -1197,22 +1194,22 @@ If asked about non-English topics: "I can only help with English learning. Ask m
                                 padding: EdgeInsets.zero, iconSize: 15,
                                 shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(10)),
-                                elevation: 4,
+                                color: C.card, elevation: 4,
                                 onSelected: (val) async {
                                   if (val == 'pin') {
                                     setState(() { s.isPinned = !s.isPinned; _sortSessions(); });
                                     _save();
+                                    HapticFeedback.lightImpact();
                                   } else if (val == 'delete') {
-                                    // Close popup first, then confirm
-                                    final confirmed = await _confirmDelete(ctx);
-                                    if (confirmed) {
-                                      // Small delay for "loading" feel
+                                    final ok = await _confirmDelete();
+                                    if (ok) {
                                       await Future.delayed(const Duration(milliseconds: 300));
                                       setState(() {
                                         _sessions.remove(s);
                                         if (_currentId == s.id) _newTempSession();
                                       });
                                       _save();
+                                      HapticFeedback.mediumImpact();
                                     }
                                   }
                                 },
@@ -1223,12 +1220,12 @@ If asked about non-English topics: "I can only help with English learning. Ask m
                                           size: 14, color: C.accent),
                                       const SizedBox(width: 8),
                                       Text(s.isPinned ? 'Unpin' : 'Pin',
-                                          style: const TextStyle(fontSize: 13)),
+                                          style: TextStyle(fontSize: 13, color: C.ink)),
                                     ])),
                                   PopupMenuItem(value: 'delete',
-                                    child: const Row(children: [
+                                    child: Row(children: [
                                       Icon(Icons.delete_outline_rounded, size: 14, color: C.red),
-                                      SizedBox(width: 8),
+                                      const SizedBox(width: 8),
                                       Text('Delete', style: TextStyle(fontSize: 13, color: C.red)),
                                     ])),
                                 ],
@@ -1241,15 +1238,85 @@ If asked about non-English topics: "I can only help with English learning. Ask m
                   ),
           ),
 
-          const Divider(height: 1, color: C.border),
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 10),
+          Divider(height: 1, color: C.border),
+
+          // Settings button
+          InkWell(
+            onTap: () {
+              HapticFeedback.lightImpact();
+              _showSettingsSheet();
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(children: [
+                Icon(Icons.settings_outlined, size: 18, color: C.ink2),
+                const SizedBox(width: 10),
+                Text('Settings', style: TextStyle(fontSize: 13, color: C.ink, fontWeight: FontWeight.w500)),
+                const Spacer(),
+                Icon(Icons.chevron_right_rounded, size: 18, color: C.ink2),
+              ]),
+            ),
+          ),
+
+          Divider(height: 1, color: C.border),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
             child: Text('SkyGen can make mistake, double check output',
                 style: TextStyle(fontSize: 10.5, color: C.ink2),
-                textAlign: TextAlign.center, maxLines: 1,
-                overflow: TextOverflow.ellipsis),
+                textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis),
           ),
         ]),
+      ),
+    );
+  }
+
+  // ── Settings Bottom Sheet ─────────────────────────────────
+  void _showSettingsSheet() {
+    Navigator.pop(context); // close drawer first
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _SettingsSheet(
+        aiMemory: _aiMemory,
+        onClearMemory: (newList) { setState(() => _aiMemory = newList); _saveMemory(); },
+        onClearAllChats: () async {
+          final ok = await showDialog<bool>(
+            context: context,
+            builder: (_) => AlertDialog(
+              backgroundColor: C.card,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: Text('Delete All Chats',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
+              content: Text('All chats will be deleted. Memory and settings will remain.',
+                  style: TextStyle(fontSize: 14, color: C.ink2)),
+              actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              actions: [Row(children: [
+                Expanded(child: OutlinedButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  style: OutlinedButton.styleFrom(side: BorderSide(color: C.border),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12)),
+                  child: Text('Cancel', style: TextStyle(color: C.ink2, fontWeight: FontWeight.w600)),
+                )),
+                const SizedBox(width: 10),
+                Expanded(child: ElevatedButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  style: ElevatedButton.styleFrom(backgroundColor: C.red, elevation: 0,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12)),
+                  child: const Text('Delete All',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                )),
+              ])],
+            ),
+          ) ?? false;
+          if (ok) {
+            setState(() { _sessions.clear(); _newTempSession(); });
+            _save();
+            HapticFeedback.heavyImpact();
+          }
+        },
       ),
     );
   }
@@ -1259,91 +1326,63 @@ If asked about non-English topics: "I can only help with English learning. Ask m
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: 28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Circular logo
-            ClipOval(
-              child: CachedNetworkImage(
-                imageUrl: kLogoUrl, width: 72, height: 72, fit: BoxFit.cover,
-                placeholder: (_, __) => Container(
-                  width: 72, height: 72,
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(colors: [C.grad1, C.grad2]),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(Icons.school_rounded, color: Colors.white, size: 36),
-                ),
-                errorWidget: (_, __, ___) => Container(
-                  width: 72, height: 72,
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(colors: [C.grad1, C.grad2]),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(Icons.school_rounded, color: Colors.white, size: 36),
-                ),
-              ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          _LogoCircle(size: 72),
+          const SizedBox(height: 18),
+          Text('What can I help with?',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink),
+              textAlign: TextAlign.center),
+          const SizedBox(height: 28),
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2, childAspectRatio: 1.75,
+              crossAxisSpacing: 10, mainAxisSpacing: 10,
             ),
-            const SizedBox(height: 18),
-            const Text('What can I help with?',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink),
-                textAlign: TextAlign.center),
-            const SizedBox(height: 28),
-            // Quick cards
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2, childAspectRatio: 1.75,
-                crossAxisSpacing: 10, mainAxisSpacing: 10,
-              ),
-              itemCount: _quickCards.length,
-              itemBuilder: (ctx, i) {
-                final c = _quickCards[i];
-                return Material(
-                  color: C.card, borderRadius: BorderRadius.circular(14),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(14),
-                    onTap: () {},
-                    child: Container(
-                      decoration: BoxDecoration(
-                          border: Border.all(color: C.border),
-                          borderRadius: BorderRadius.circular(14)),
-                      padding: const EdgeInsets.all(13),
-                      child: Row(children: [
-                        Container(
-                          width: 30, height: 30,
-                          decoration: BoxDecoration(
-                              color: (c['color'] as Color).withOpacity(0.12),
-                              borderRadius: BorderRadius.circular(8)),
-                          child: Icon(c['icon'] as IconData,
-                              color: c['color'] as Color, size: 15),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(child: Text(c['label'] as String,
-                            style: const TextStyle(fontSize: 12,
-                                fontWeight: FontWeight.w700, color: C.ink))),
-                      ]),
-                    ),
+            itemCount: _quickCards.length,
+            itemBuilder: (ctx, i) {
+              final c = _quickCards[i];
+              return Material(
+                color: C.card, borderRadius: BorderRadius.circular(14),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(14), onTap: () {},
+                  child: Container(
+                    decoration: BoxDecoration(
+                        border: Border.all(color: C.border),
+                        borderRadius: BorderRadius.circular(14)),
+                    padding: const EdgeInsets.all(13),
+                    child: Row(children: [
+                      Container(
+                        width: 30, height: 30,
+                        decoration: BoxDecoration(
+                            color: (c['color'] as Color).withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(8)),
+                        child: Icon(c['icon'] as IconData,
+                            color: c['color'] as Color, size: 15),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text(c['label'] as String,
+                          style: TextStyle(fontSize: 12,
+                              fontWeight: FontWeight.w700, color: C.ink))),
+                    ]),
                   ),
-                );
-              },
-            ),
-          ],
-        ),
+                ),
+              );
+            },
+          ),
+        ]),
       ),
     );
   }
 
-  // ── Input area ────────────────────────────────────────────
+  // ── Input ─────────────────────────────────────────────────
   Widget _buildInput() {
     final pad = MediaQuery.of(context).padding.bottom;
     return Container(
       color: C.card,
       child: Column(children: [
-        const Divider(height: 1, color: C.border),
-
-        // Image previews
+        Divider(height: 1, color: C.border),
         if (_pendingImages.isNotEmpty)
           SizedBox(
             height: 70,
@@ -1353,58 +1392,59 @@ If asked about non-English topics: "I can only help with English learning. Ask m
               itemCount: _pendingImages.length,
               itemBuilder: (ctx, i) {
                 final img = _pendingImages[i];
-                return Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    Container(
-                      width: 56, height: 56,
-                      margin: const EdgeInsets.only(right: 10),
-                      decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: C.border),
-                          image: DecorationImage(
-                              image: FileImage(img.file), fit: BoxFit.cover)),
-                      child: img.isLoading
-                          ? Container(
-                              decoration: BoxDecoration(
-                                  color: Colors.black.withOpacity(0.38),
-                                  borderRadius: BorderRadius.circular(10)),
-                              child: const Center(child: SizedBox(
-                                  width: 18, height: 18,
-                                  child: CircularProgressIndicator(
-                                      strokeWidth: 2, color: Colors.white))))
-                          : img.uploadedUrl != null
-                              ? Align(
-                                  alignment: Alignment.bottomRight,
-                                  child: Container(
-                                    width: 16, height: 16,
-                                    margin: const EdgeInsets.all(3),
-                                    decoration: const BoxDecoration(
-                                        color: C.green, shape: BoxShape.circle),
-                                    child: const Icon(Icons.check,
-                                        size: 10, color: Colors.white),
-                                  ))
-                              : null,
+                return Stack(clipBehavior: Clip.none, children: [
+                  Container(
+                    width: 56, height: 56,
+                    margin: const EdgeInsets.only(right: 10),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                          color: img.isError ? C.red : C.border,
+                          width: img.isError ? 2 : 1),
+                      image: DecorationImage(
+                          image: FileImage(img.file), fit: BoxFit.cover),
                     ),
-                    if (!img.isLoading)
-                      Positioned(
-                        top: -6, right: 2,
-                        child: GestureDetector(
-                          onTap: () => setState(() => _pendingImages.removeAt(i)),
-                          child: Container(
-                            width: 18, height: 18,
-                            decoration: const BoxDecoration(
-                                color: C.red, shape: BoxShape.circle),
-                            child: const Icon(Icons.close, size: 11, color: Colors.white)),
-                        ),
+                    child: img.isLoading
+                        ? Container(
+                            decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.38),
+                                borderRadius: BorderRadius.circular(10)),
+                            child: const Center(child: SizedBox(width: 18, height: 18,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Colors.white))))
+                        : img.isError
+                            ? Container(
+                                decoration: BoxDecoration(
+                                    color: C.red.withOpacity(0.3),
+                                    borderRadius: BorderRadius.circular(10)),
+                                child: const Center(
+                                    child: Icon(Icons.error_outline, color: Colors.white, size: 20)))
+                            : img.uploadedUrl != null
+                                ? Align(
+                                    alignment: Alignment.bottomRight,
+                                    child: Container(
+                                      width: 16, height: 16, margin: const EdgeInsets.all(3),
+                                      decoration: BoxDecoration(
+                                          color: C.green, shape: BoxShape.circle),
+                                      child: const Icon(Icons.check, size: 10, color: Colors.white),
+                                    ))
+                                : null,
+                  ),
+                  if (!img.isLoading)
+                    Positioned(
+                      top: -6, right: 2,
+                      child: GestureDetector(
+                        onTap: () => setState(() => _pendingImages.removeAt(i)),
+                        child: Container(
+                          width: 18, height: 18,
+                          decoration: BoxDecoration(color: C.red, shape: BoxShape.circle),
+                          child: const Icon(Icons.close, size: 11, color: Colors.white)),
                       ),
-                  ],
-                );
+                    ),
+                ]);
               },
             ),
           ),
-
-        // Input row
         Padding(
           padding: EdgeInsets.fromLTRB(12, 8, 12, pad + 6),
           child: Container(
@@ -1412,40 +1452,34 @@ If asked about non-English topics: "I can only help with English learning. Ask m
                 color: C.bg, borderRadius: BorderRadius.circular(18),
                 border: Border.all(color: C.border)),
             child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              // Image button
               Padding(
                 padding: const EdgeInsets.only(left: 8, bottom: 7),
                 child: Material(
                   color: Colors.transparent,
                   child: InkWell(
-                    borderRadius: BorderRadius.circular(9),
-                    onTap: _pickImages,
+                    borderRadius: BorderRadius.circular(9), onTap: _pickImages,
                     child: Container(
                       width: 32, height: 32,
                       decoration: BoxDecoration(
                           color: C.accentL, borderRadius: BorderRadius.circular(9)),
-                      child: const Icon(Icons.image_outlined, color: C.accent, size: 16)),
+                      child: Icon(Icons.image_outlined, color: C.accent, size: 16)),
                   ),
                 ),
               ),
               const SizedBox(width: 8),
-              // TextField
-              Expanded(
-                child: TextField(
-                  controller: _inputCtrl,
-                  enabled: !_isGenerating,
-                  maxLines: 5, minLines: 1,
-                  style: const TextStyle(fontSize: 14.5, color: C.ink),
-                  textInputAction: TextInputAction.newline,
-                  decoration: const InputDecoration(
-                    hintText: 'Ask anything...',
-                    hintStyle: TextStyle(color: C.ink2, fontSize: 14.5),
-                    border: InputBorder.none,
-                    contentPadding: EdgeInsets.symmetric(vertical: 9),
-                  ),
+              Expanded(child: TextField(
+                controller: _inputCtrl,
+                enabled: !_isGenerating,
+                maxLines: 5, minLines: 1,
+                style: TextStyle(fontSize: 14.5, color: C.ink),
+                textInputAction: TextInputAction.newline,
+                decoration: InputDecoration(
+                  hintText: 'Ask anything...',
+                  hintStyle: TextStyle(color: C.ink2, fontSize: 14.5),
+                  border: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 9),
                 ),
-              ),
-              // Send / Stop
+              )),
               Padding(
                 padding: const EdgeInsets.only(right: 7, bottom: 7),
                 child: GestureDetector(
@@ -1456,12 +1490,9 @@ If asked about non-English topics: "I can only help with English learning. Ask m
                     duration: const Duration(milliseconds: 180),
                     width: 34, height: 34,
                     decoration: BoxDecoration(
-                      gradient: _isGenerating
-                          ? null
-                          : const LinearGradient(
-                              colors: [C.grad1, C.grad2],
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight),
+                      gradient: _isGenerating ? null
+                          : const LinearGradient(colors: [C.grad1, C.grad2],
+                              begin: Alignment.topLeft, end: Alignment.bottomRight),
                       color: _isGenerating ? C.red : null,
                       borderRadius: BorderRadius.circular(9),
                     ),
@@ -1474,15 +1505,11 @@ If asked about non-English topics: "I can only help with English learning. Ask m
             ]),
           ),
         ),
-
-        // Footer
         Padding(
           padding: EdgeInsets.only(bottom: pad > 0 ? 2 : 6),
-          child: const Text(
-            'SkyGen can make mistake, double check output',
-            style: TextStyle(fontSize: 10.5, color: C.ink2),
-            textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
-          ),
+          child: Text('SkyGen can make mistake, double check output',
+              style: TextStyle(fontSize: 10.5, color: C.ink2),
+              textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis),
         ),
       ]),
     );
@@ -1490,7 +1517,328 @@ If asked about non-English topics: "I can only help with English learning. Ask m
 }
 
 // ══════════════════════════════════════════════════════════════
-// 6. SCROLL FAB
+// 9. SETTINGS BOTTOM SHEET
+// ══════════════════════════════════════════════════════════════
+
+class _SettingsSheet extends StatefulWidget {
+  final List<String> aiMemory;
+  final void Function(List<String>) onClearMemory;
+  final VoidCallback onClearAllChats;
+
+  const _SettingsSheet({
+    required this.aiMemory,
+    required this.onClearMemory,
+    required this.onClearAllChats,
+  });
+
+  @override
+  State<_SettingsSheet> createState() => _SettingsSheetState();
+}
+
+class _SettingsSheetState extends State<_SettingsSheet> {
+  bool _showMemory    = false;
+  bool _showAbout     = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_showMemory) return _buildMemoryPage();
+    if (_showAbout)  return _buildAboutPage();
+    return _buildMainSheet();
+  }
+
+  Widget _buildMainSheet() {
+    return Container(
+      decoration: BoxDecoration(
+        color: C.card,
+        borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(20), topRight: Radius.circular(20)),
+      ),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        // Handle bar
+        Container(
+          margin: const EdgeInsets.only(top: 12, bottom: 4),
+          width: 36, height: 4,
+          decoration: BoxDecoration(color: C.border, borderRadius: BorderRadius.circular(3)),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 16, 12),
+          child: Row(children: [
+            Text('Settings', style: TextStyle(
+                fontSize: 17, fontWeight: FontWeight.w800, color: C.ink)),
+            const Spacer(),
+            GestureDetector(
+              onTap: () { HapticFeedback.lightImpact(); Navigator.pop(context); },
+              child: Container(
+                width: 30, height: 30,
+                decoration: BoxDecoration(color: C.bg, borderRadius: BorderRadius.circular(8)),
+                child: Icon(Icons.close_rounded, size: 16, color: C.ink2),
+              ),
+            ),
+          ]),
+        ),
+        Divider(height: 1, color: C.border),
+
+        // Dark mode toggle
+        _SettingsTile(
+          icon: themeNotifier.isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
+          title: themeNotifier.isDark ? 'Light Mode' : 'Dark Mode',
+          trailing: Switch(
+            value: themeNotifier.isDark,
+            activeColor: C.accent,
+            onChanged: (_) { themeNotifier.toggle(); HapticFeedback.lightImpact(); setState(() {}); },
+          ),
+          onTap: () { themeNotifier.toggle(); HapticFeedback.lightImpact(); setState(() {}); },
+        ),
+
+        // Manage Memory
+        _SettingsTile(
+          icon: Icons.memory_rounded,
+          title: 'Manage Memory',
+          onTap: () { HapticFeedback.lightImpact(); setState(() => _showMemory = true); },
+        ),
+
+        // Delete all chats
+        _SettingsTile(
+          icon: Icons.delete_sweep_outlined,
+          title: 'Delete All Chats',
+          iconColor: C.red,
+          textColor: C.red,
+          onTap: () {
+            HapticFeedback.mediumImpact();
+            Navigator.pop(context);
+            widget.onClearAllChats();
+          },
+        ),
+
+        // Developer
+        _SettingsTile(
+          icon: Icons.code_rounded,
+          title: 'Developer',
+          onTap: () async {
+            HapticFeedback.lightImpact();
+            final uri = Uri.parse(kDevTg);
+            if (await canLaunchUrl(uri)) launchUrl(uri, mode: LaunchMode.externalApplication);
+          },
+        ),
+
+        // About App
+        _SettingsTile(
+          icon: Icons.info_outline_rounded,
+          title: 'About App',
+          onTap: () { HapticFeedback.lightImpact(); setState(() => _showAbout = true); },
+        ),
+
+        SizedBox(height: MediaQuery.of(context).padding.bottom + 16),
+      ]),
+    );
+  }
+
+  Widget _buildMemoryPage() {
+    final memory = widget.aiMemory;
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.65,
+      decoration: BoxDecoration(
+        color: C.card,
+        borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(20), topRight: Radius.circular(20)),
+      ),
+      child: Column(children: [
+        Container(
+          margin: const EdgeInsets.only(top: 12, bottom: 4),
+          width: 36, height: 4,
+          decoration: BoxDecoration(color: C.border, borderRadius: BorderRadius.circular(3)),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          child: Row(children: [
+            GestureDetector(
+              onTap: () { HapticFeedback.lightImpact(); setState(() => _showMemory = false); },
+              child: Icon(Icons.arrow_back_rounded, color: C.ink, size: 22),
+            ),
+            const SizedBox(width: 12),
+            Text('Manage Memory', style: TextStyle(
+                fontSize: 16, fontWeight: FontWeight.w800, color: C.ink)),
+            const Spacer(),
+            if (memory.isNotEmpty)
+              GestureDetector(
+                onTap: () {
+                  HapticFeedback.mediumImpact();
+                  widget.onClearMemory([]);
+                  setState(() {});
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                      color: C.red.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
+                  child: Text('Clear All', style: TextStyle(color: C.red, fontSize: 12, fontWeight: FontWeight.w600)),
+                ),
+              ),
+          ]),
+        ),
+        Divider(height: 1, color: C.border),
+        Expanded(
+          child: memory.isEmpty
+              ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.memory_rounded, color: C.ink2, size: 32),
+                  const SizedBox(height: 10),
+                  Text('No memories yet', style: TextStyle(color: C.ink2, fontSize: 14)),
+                  const SizedBox(height: 6),
+                  Text('SkyGen will remember useful info from your chats.',
+                      style: TextStyle(color: C.ink2, fontSize: 12), textAlign: TextAlign.center),
+                ]))
+              : ListView.separated(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: memory.length,
+                  separatorBuilder: (_, __) => Divider(height: 1, color: C.border),
+                  itemBuilder: (_, i) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: Row(children: [
+                      Icon(Icons.circle, size: 6, color: C.accent),
+                      const SizedBox(width: 12),
+                      Expanded(child: Text(memory[i],
+                          style: TextStyle(fontSize: 13, color: C.ink))),
+                      GestureDetector(
+                        onTap: () {
+                          HapticFeedback.lightImpact();
+                          final updated = List<String>.from(memory)..removeAt(i);
+                          widget.onClearMemory(updated);
+                          setState(() {});
+                        },
+                        child: Icon(Icons.close_rounded, size: 16, color: C.ink2),
+                      ),
+                    ]),
+                  ),
+                ),
+        ),
+        SizedBox(height: MediaQuery.of(context).padding.bottom + 12),
+      ]),
+    );
+  }
+
+  Widget _buildAboutPage() {
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.6,
+      decoration: BoxDecoration(
+        color: C.card,
+        borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(20), topRight: Radius.circular(20)),
+      ),
+      child: Column(children: [
+        Container(
+          margin: const EdgeInsets.only(top: 12, bottom: 4),
+          width: 36, height: 4,
+          decoration: BoxDecoration(color: C.border, borderRadius: BorderRadius.circular(3)),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          child: Row(children: [
+            GestureDetector(
+              onTap: () { setState(() => _showAbout = false); },
+              child: Icon(Icons.arrow_back_rounded, color: C.ink, size: 22),
+            ),
+            const SizedBox(width: 12),
+            Text('About App', style: TextStyle(
+                fontSize: 16, fontWeight: FontWeight.w800, color: C.ink)),
+          ]),
+        ),
+        Divider(height: 1, color: C.border),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Center(child: _LogoCircle(size: 64)),
+              const SizedBox(height: 16),
+              Center(child: Text('SkyGen', style: TextStyle(
+                  fontSize: 22, fontWeight: FontWeight.w800, color: C.ink))),
+              Center(child: Text('English AI Tutor',
+                  style: TextStyle(fontSize: 13, color: C.ink2))),
+              const SizedBox(height: 20),
+              _AboutItem(icon: Icons.school_rounded,
+                  title: 'What it does',
+                  desc: 'SkyGen is your personal English tutor — grammar, translation, vocabulary, SSC/HSC prep, and more.'),
+              _AboutItem(icon: Icons.auto_fix_high_rounded,
+                  title: 'Key Features',
+                  desc: 'Grammar correction • Translation • Tense learning • Essay & letter writing • Image text analysis • Voice reading'),
+              _AboutItem(icon: Icons.memory_rounded,
+                  title: 'Smart Memory',
+                  desc: 'SkyGen remembers important info about you across sessions for a personalized experience.'),
+              _AboutItem(icon: Icons.code_rounded,
+                  title: 'Developer',
+                  desc: 'MD. Jaid Bin Siyam — Hyper Squad\n@BD_Prime_Minister'),
+              const SizedBox(height: 8),
+              Center(child: Text('Version 1.0.0',
+                  style: TextStyle(fontSize: 11, color: C.ink2))),
+            ]),
+          ),
+        ),
+        SizedBox(height: MediaQuery.of(context).padding.bottom + 12),
+      ]),
+    );
+  }
+}
+
+class _SettingsTile extends StatelessWidget {
+  final IconData icon;
+  final String   title;
+  final Widget?  trailing;
+  final Color?   iconColor;
+  final Color?   textColor;
+  final VoidCallback onTap;
+
+  const _SettingsTile({
+    required this.icon, required this.title, required this.onTap,
+    this.trailing, this.iconColor, this.textColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        child: Row(children: [
+          Icon(icon, size: 18, color: iconColor ?? C.ink2),
+          const SizedBox(width: 14),
+          Expanded(child: Text(title, style: TextStyle(
+              fontSize: 14, color: textColor ?? C.ink, fontWeight: FontWeight.w500))),
+          trailing ?? Icon(Icons.chevron_right_rounded, size: 18, color: C.ink2),
+        ]),
+      ),
+    );
+  }
+}
+
+class _AboutItem extends StatelessWidget {
+  final IconData icon;
+  final String   title;
+  final String   desc;
+  const _AboutItem({required this.icon, required this.title, required this.desc});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(
+          width: 34, height: 34,
+          decoration: BoxDecoration(
+              color: C.accentL, borderRadius: BorderRadius.circular(9)),
+          child: Icon(icon, color: C.accent, size: 16),
+        ),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title, style: TextStyle(
+              fontSize: 13, fontWeight: FontWeight.w700, color: C.ink)),
+          const SizedBox(height: 3),
+          Text(desc, style: TextStyle(fontSize: 12, color: C.ink2, height: 1.45)),
+        ])),
+      ]),
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// 10. SCROLL FAB
 // ══════════════════════════════════════════════════════════════
 
 class _ScrollFab extends StatelessWidget {
@@ -1510,15 +1858,62 @@ class _ScrollFab extends StatelessWidget {
               color: Colors.black.withOpacity(0.10),
               blurRadius: 10, offset: const Offset(0, 2))],
         ),
-        child: const Icon(Icons.keyboard_double_arrow_down_rounded,
-            color: C.ink, size: 20),
+        child: Icon(Icons.keyboard_double_arrow_down_rounded, color: C.ink, size: 20),
       ),
     );
   }
 }
 
 // ══════════════════════════════════════════════════════════════
-// 7. BUBBLE WIDGET
+// 11. IMAGE FULL SCREEN VIEWER
+// ══════════════════════════════════════════════════════════════
+
+class _ImageViewerPage extends StatefulWidget {
+  final String imageUrl;
+  const _ImageViewerPage({required this.imageUrl});
+
+  @override
+  State<_ImageViewerPage> createState() => _ImageViewerPageState();
+}
+
+class _ImageViewerPageState extends State<_ImageViewerPage> {
+  final _transform = TransformationController();
+
+  @override
+  void dispose() { _transform.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        iconTheme: const IconThemeData(color: Colors.white),
+        leading: IconButton(
+          icon: const Icon(Icons.close_rounded),
+          onPressed: () => Navigator.pop(context),
+        ),
+      ),
+      body: Center(
+        child: InteractiveViewer(
+          transformationController: _transform,
+          minScale: 0.5, maxScale: 5.0,
+          child: CachedNetworkImage(
+            imageUrl: widget.imageUrl,
+            fit: BoxFit.contain,
+            placeholder: (_, __) => const Center(
+                child: CircularProgressIndicator(color: Colors.white)),
+            errorWidget: (_, __, ___) =>
+                const Icon(Icons.broken_image, color: Colors.white, size: 48),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// 12. BUBBLE WIDGET
 // ══════════════════════════════════════════════════════════════
 
 class _BubbleWidget extends StatefulWidget {
@@ -1529,16 +1924,13 @@ class _BubbleWidget extends StatefulWidget {
   final void Function(String)         onCopy;
   final void Function(String)         onLike;
   final void Function(String)         onDislike;
+  final void Function(String)         onImageTap;
 
   const _BubbleWidget({
     super.key,
-    required this.msg,
-    required this.isPlayingTTS,
-    required this.isTTSLoading,
-    required this.onSpeak,
-    required this.onCopy,
-    required this.onLike,
-    required this.onDislike,
+    required this.msg, required this.isPlayingTTS, required this.isTTSLoading,
+    required this.onSpeak, required this.onCopy, required this.onLike,
+    required this.onDislike, required this.onImageTap,
   });
 
   @override
@@ -1555,11 +1947,10 @@ class _BubbleState extends State<_BubbleWidget>
   void initState() {
     super.initState();
     _fadeCtrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 180));
+        vsync: this, duration: const Duration(milliseconds: 250));
     _fadeAnim = CurvedAnimation(parent: _fadeCtrl, curve: Curves.easeOut);
-    // Action bar always visible for completed AI messages
-    if (widget.msg.type == MsgType.ai &&
-        widget.msg.status == GenStatus.completed) {
+    // Show action bar immediately for already-completed messages (loaded from storage)
+    if (widget.msg.type == MsgType.ai && widget.msg.status == GenStatus.completed) {
       _fadeCtrl.value = 1.0;
     }
   }
@@ -1567,6 +1958,7 @@ class _BubbleState extends State<_BubbleWidget>
   @override
   void didUpdateWidget(_BubbleWidget old) {
     super.didUpdateWidget(old);
+    // Animate in when streaming completes
     if (widget.msg.status == GenStatus.completed &&
         old.msg.status != GenStatus.completed &&
         widget.msg.type == MsgType.ai) {
@@ -1591,134 +1983,124 @@ class _BubbleState extends State<_BubbleWidget>
       mainAxisAlignment: MainAxisAlignment.end,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Flexible(
-          child: GestureDetector(
-            // Long press = silent copy
-            onLongPress: () {
-              if (widget.msg.text.isNotEmpty) {
-                widget.onCopy(widget.msg.text);
-                HapticFeedback.mediumImpact();
-              }
-            },
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                if (widget.msg.imgUrls?.isNotEmpty == true)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: Wrap(
-                      spacing: 6, runSpacing: 6, alignment: WrapAlignment.end,
-                      children: widget.msg.imgUrls!.map((url) =>
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(10),
-                          child: CachedNetworkImage(
-                            imageUrl: url, width: 108, height: 108, fit: BoxFit.cover,
-                            placeholder: (_, __) =>
-                                Container(width: 108, height: 108, color: C.border),
-                          ),
-                        )).toList(),
-                    ),
-                  ),
-                if (widget.msg.text.isNotEmpty)
-                  Container(
-                    constraints: BoxConstraints(
-                        maxWidth: MediaQuery.of(context).size.width * 0.72),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                    decoration: const BoxDecoration(
-                      color: C.userBub,
-                      borderRadius: BorderRadius.only(
-                        topLeft: Radius.circular(16), topRight: Radius.circular(4),
-                        bottomLeft: Radius.circular(16), bottomRight: Radius.circular(16),
+        Flexible(child: GestureDetector(
+          // Long press = silent copy, no toast
+          onLongPress: () {
+            if (widget.msg.text.isNotEmpty) {
+              widget.onCopy(widget.msg.text);
+              HapticFeedback.mediumImpact();
+            }
+          },
+          child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            if (widget.msg.imgUrls?.isNotEmpty == true)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Wrap(
+                  spacing: 6, runSpacing: 6, alignment: WrapAlignment.end,
+                  children: widget.msg.imgUrls!.map((url) =>
+                    GestureDetector(
+                      onTap: () => widget.onImageTap(url),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: CachedNetworkImage(
+                          imageUrl: url, width: 108, height: 108, fit: BoxFit.cover,
+                          placeholder: (_, __) =>
+                              Container(width: 108, height: 108, color: C.border),
+                        ),
                       ),
-                    ),
-                    child: Text(widget.msg.text,
-                        style: const TextStyle(fontSize: 14.5, color: C.ink, height: 1.45)),
+                    )).toList(),
+                ),
+              ),
+            if (widget.msg.text.isNotEmpty)
+              Container(
+                constraints: BoxConstraints(
+                    maxWidth: MediaQuery.of(context).size.width * 0.72),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: C.userBub,
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(16), topRight: Radius.circular(4),
+                    bottomLeft: Radius.circular(16), bottomRight: Radius.circular(16),
                   ),
-              ],
-            ),
-          ),
-        ),
+                ),
+                child: Text(widget.msg.text,
+                    style: TextStyle(fontSize: 14.5, color: C.ink, height: 1.45)),
+              ),
+          ]),
+        )),
       ],
     );
   }
 
   Widget _buildAI() {
     final isWaiting = widget.msg.status == GenStatus.waiting ||
-        (widget.msg.status == GenStatus.streaming &&
-            widget.msg.visibleText.isEmpty);
+        (widget.msg.status == GenStatus.streaming && widget.msg.visibleText.isEmpty);
     final isDone = widget.msg.status == GenStatus.completed;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Waiting / empty streaming → dots only
-        if (isWaiting)
-          const _ThinkingDots()
-        else ...[
-          if (widget.msg.visibleText.isNotEmpty)
-            Container(
-              constraints: BoxConstraints(
-                  maxWidth: MediaQuery.of(context).size.width * 0.9),
-              child: MarkdownBody(
-                data: widget.msg.visibleText,
-                selectable: true,
-                styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-                  p: const TextStyle(fontSize: 14.5, color: C.ink, height: 1.55),
-                  code: const TextStyle(fontSize: 13, fontFamily: 'monospace',
-                      backgroundColor: Color(0xFFF3F4F6), color: C.accent),
-                  codeblockDecoration: BoxDecoration(
-                      color: const Color(0xFFF3F4F6),
-                      borderRadius: BorderRadius.circular(10)),
-                  h1: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: C.ink),
-                  h2: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink),
-                  h3: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700, color: C.ink),
-                  strong: const TextStyle(fontWeight: FontWeight.w700, color: C.ink),
-                  tableBorder: TableBorder.all(color: C.border),
-                  tableHead: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
-                  tableBody: const TextStyle(fontSize: 13, height: 1.4),
-                ),
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      if (isWaiting)
+        const _ThinkingDots()
+      else ...[
+        if (widget.msg.visibleText.isNotEmpty)
+          Container(
+            constraints: BoxConstraints(
+                maxWidth: MediaQuery.of(context).size.width * 0.92),
+            child: MarkdownBody(
+              data: widget.msg.visibleText,
+              selectable: true,
+              styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+                p: TextStyle(fontSize: 14.5, color: C.ink, height: 1.55),
+                code: TextStyle(fontSize: 13, fontFamily: 'monospace',
+                    backgroundColor: C.bg, color: C.accent),
+                codeblockDecoration: BoxDecoration(
+                    color: C.bg, borderRadius: BorderRadius.circular(10)),
+                h1: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: C.ink),
+                h2: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink),
+                h3: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700, color: C.ink),
+                strong: TextStyle(fontWeight: FontWeight.w700, color: C.ink),
+                tableBorder: TableBorder.all(color: C.border),
+                tableHead: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                tableBody: const TextStyle(fontSize: 13, height: 1.4),
               ),
             ),
+          ),
 
-          if (widget.msg.status == GenStatus.error)
-            Container(
-              margin: const EdgeInsets.only(top: 6),
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                  color: C.red.withOpacity(0.08),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: C.red.withOpacity(0.2))),
-              child: Text(widget.msg.text,
-                  style: const TextStyle(color: C.red, fontSize: 13)),
-            ),
+        if (widget.msg.status == GenStatus.error)
+          Container(
+            margin: const EdgeInsets.only(top: 6),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+                color: C.red.withOpacity(0.08), borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: C.red.withOpacity(0.2))),
+            child: Text(widget.msg.text, style: TextStyle(color: C.red, fontSize: 13)),
+          ),
 
-          // Action bar
-          if (isDone && widget.msg.text.isNotEmpty)
-            FadeTransition(
-              opacity: _fadeAnim,
-              child: Padding(
-                padding: const EdgeInsets.only(top: 7),
-                child: _AIActionBar(
-                  msg: widget.msg,
-                  isPlayingTTS: widget.isPlayingTTS,
-                  isTTSLoading: widget.isTTSLoading,
-                  copiedFlash:  _copiedFlash,
-                  onCopy: () {
-                    widget.onCopy(widget.msg.text);
-                    setState(() => _copiedFlash = true);
-                    Future.delayed(const Duration(milliseconds: 1300), () {
-                      if (mounted) setState(() => _copiedFlash = false);
-                    });
-                  },
-                  onSpeak:   () => widget.onSpeak(widget.msg.id, widget.msg.text),
-                  onLike:    () => widget.onLike(widget.msg.id),
-                  onDislike: () => widget.onDislike(widget.msg.id),
-                ),
+        if (isDone && widget.msg.text.isNotEmpty)
+          FadeTransition(
+            opacity: _fadeAnim,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: _AIActionBar(
+                msg: widget.msg,
+                isPlayingTTS: widget.isPlayingTTS,
+                isTTSLoading: widget.isTTSLoading,
+                copiedFlash: _copiedFlash,
+                onCopy: () {
+                  widget.onCopy(widget.msg.text);
+                  HapticFeedback.lightImpact();
+                  setState(() => _copiedFlash = true);
+                  Future.delayed(const Duration(milliseconds: 1300), () {
+                    if (mounted) setState(() => _copiedFlash = false);
+                  });
+                },
+                onSpeak:   () => widget.onSpeak(widget.msg.id, widget.msg.text),
+                onLike:    () { widget.onLike(widget.msg.id); HapticFeedback.lightImpact(); },
+                onDislike: () { widget.onDislike(widget.msg.id); HapticFeedback.lightImpact(); },
               ),
             ),
-        ],
+          ),
       ],
-    );
+    ]);
   }
 }
 
@@ -1741,23 +2123,20 @@ class _AIActionBar extends StatelessWidget {
     return Row(mainAxisSize: MainAxisSize.min, children: [
       _Btn(
         icon:  copiedFlash ? Icons.check_rounded : Icons.copy_rounded,
-        color: copiedFlash ? C.green : C.ink2,
-        onTap: onCopy,
+        color: copiedFlash ? C.green : C.ink2, onTap: onCopy,
       ),
-      // TTS: loading spinner → pause when playing
       isTTSLoading
-          ? const SizedBox(
-              width: 30, height: 30,
-              child: Center(child: SizedBox(
-                  width: 13, height: 13,
+          ? SizedBox(width: 30, height: 30,
+              child: Center(child: SizedBox(width: 13, height: 13,
                   child: CircularProgressIndicator(strokeWidth: 2, color: C.ink2))))
           : _Btn(
               icon:  isPlayingTTS ? Icons.pause_rounded : Icons.volume_up_rounded,
-              color: isPlayingTTS ? C.accent : C.ink2,
-              onTap: onSpeak,
+              color: isPlayingTTS ? C.accent : C.ink2, onTap: onSpeak,
             ),
-      _Btn(icon: Icons.thumb_up_rounded,   color: msg.liked    ? C.accent : C.ink2, onTap: onLike),
-      _Btn(icon: Icons.thumb_down_rounded, color: msg.disliked ? C.red    : C.ink2, onTap: onDislike),
+      _Btn(icon: Icons.thumb_up_rounded,
+          color: msg.liked    ? C.accent : C.ink2, onTap: onLike),
+      _Btn(icon: Icons.thumb_down_rounded,
+          color: msg.disliked ? C.red    : C.ink2, onTap: onDislike),
     ]);
   }
 }
@@ -1773,8 +2152,7 @@ class _Btn extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        borderRadius: BorderRadius.circular(8),
-        onTap: onTap,
+        borderRadius: BorderRadius.circular(8), onTap: onTap,
         child: Container(width: 30, height: 30,
             alignment: Alignment.center,
             child: Icon(icon, size: 15, color: color)),
@@ -1784,7 +2162,7 @@ class _Btn extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════
-// 8. ANIMATED THINKING DOTS
+// 13. THINKING DOTS ANIMATION
 // ══════════════════════════════════════════════════════════════
 
 class _ThinkingDots extends StatefulWidget {
