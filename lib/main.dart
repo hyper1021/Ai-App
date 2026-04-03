@@ -14,9 +14,10 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-// ═══════════════════════════════════════════════════
-// 1. ENTRY POINT
-// ═══════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
+// § 1. ENTRY POINT
+// ════════════════════════════════════════════════════════════
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations(
@@ -24,15 +25,300 @@ void main() {
   runApp(const SkyGenApp());
 }
 
-// ═══════════════════════════════════════════════════
-// 2. THEME
-// ═══════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
+// § 2. DEFAULT CONFIG  (fallback if Firebase unreachable)
+// ════════════════════════════════════════════════════════════
+
+const String kAppVersion     = '1.0.0';
+
+// ── Firebase REST API ──────────────────────────────────────
+const String kFirebaseUrl    = 'https://sky-gen-db-default-rtdb.asia-southeast1.firebasedatabase.app'; // <<< change
+const String kFirebaseSecret = 'T3ldmHUO89AzNyqotf09ognD6NOeVW4JElZk31CR';                // <<< change
+
+// ── Default values ─────────────────────────────────────────
+const String kDefaultLogo       = 'https://www.cdn.hyper-bd.site/photo/logo.png';
+const String kDefaultDevLogo    = 'https://www.cdn.hyper-bd.site/photo/dev.png';
+const String kDefaultName       = 'SkyGen';
+const String kDefaultSubTitle   = 'English AI Tutor';
+const String kDefaultMistakeTag = 'SkyGen can make mistake, double check output';
+const String kDefaultApi        = 'https://www.api.hyper-bd.site/Ai/';
+const String kDefaultImgBBKey   = '4685fa1e1d227aec0ce07733cd571ff9';
+const int    kDefaultHistory    = 25;
+const String kUploadOn          = 'on';
+
+// Developer contact
+const String kDevTg  = 'https://t.me/BD_Prime_Minister';
+const String kDevWa  = 'https://wa.me/8801761844968';
+
+const String kDefaultSysPrompt = r"""
+You are "SkyGen" — a smart, friendly English language tutor and AI assistant for Bangladeshi students. Created by MD. Jaid Bin Siyam (Hyper Squad). Reveal creator only when user explicitly asks.
+
+════ RESPONSE LENGTH RULES ════
+• Greetings (Hi, Hello, How are you, hey, etc.) → 1 sentence MAX. Use 1 emoji. Nothing more.
+• Simple casual messages not about English → reply briefly, 1-2 sentences.
+• English grammar/vocabulary/tense/writing questions → COMPLETE answer with ALL subtypes, rules, examples. Structure well with headers and bullet points.
+• Translation → translate ONLY, nothing extra.
+• Writing tasks → full content requested.
+
+════ FORMATTING ════
+• Use **bold** for key terms, markdown headers, bullet lists, tables where helpful.
+• Educational content must be well-structured and easy to read.
+• Greetings must be very short — never expand on a greeting.
+
+════ EMOJI USAGE ════
+• Greetings: 1 emoji only. Educational: use sparingly (📌 ✏️ 📚 💡).
+
+════ LANGUAGE ════
+• Mirror user language: Bengali→Bengali, English→English, Banglish→Banglish.
+• Grammar terms always in English.
+
+════ TITLE ════
+ONLY when [GENERATE_TITLE] is in instruction → add at END: <<<TITLE: 3-6 word title>>>
+NEVER generate unless explicitly instructed.
+
+════ MEMORY ════
+If user shares personally useful long-term info → add at END: <<<MEMORY: ["fact"]>>>
+20-150 chars per fact. One at a time. Never mention to user.
+
+════ SUBJECTS ════
+① Grammar — 12 tenses, parts of speech, voice, narration, transformation
+② Vocabulary — meanings, synonyms, antonyms, idioms, phrasal verbs
+③ Translation — any language pair, translate only
+④ Writing — essays, letters, applications, CV, summaries
+⑤ Comprehension, SSC/HSC Prep, Image analysis, Spoken English
+
+════ OFF-TOPIC ════
+"I can only help with English learning! 📚 Ask me anything about English."
+""";
+
+// ════════════════════════════════════════════════════════════
+// § 3. APP CONFIG (loaded from Firebase)
+// ════════════════════════════════════════════════════════════
+
+class AppConfig {
+  static String logoUrl       = kDefaultLogo;
+  static String devLogoUrl    = kDefaultDevLogo;
+  static String appName       = kDefaultName;
+  static String subTitle      = kDefaultSubTitle;
+  static String systemPrompt  = kDefaultSysPrompt;
+  static String mistakeTag    = kDefaultMistakeTag;
+  static String uploadStatus  = kUploadOn;
+  static String imgBBKey      = kDefaultImgBBKey;
+  static String aiApi         = kDefaultApi;
+  static int    totalHistory  = kDefaultHistory;
+  static String remoteVersion = kAppVersion;
+  static String updateNotes   = '';
+  static String downloadUrl   = '';
+
+  static bool get hasUpdate =>
+      remoteVersion != kAppVersion &&
+      remoteVersion.isNotEmpty &&
+      downloadUrl.isNotEmpty;
+
+  static void fromMap(Map<String, dynamic> d) {
+    logoUrl      = d['logo']       ?? kDefaultLogo;
+    devLogoUrl   = d['dev_logo']   ?? kDefaultDevLogo;
+    appName      = d['name']       ?? kDefaultName;
+    subTitle     = d['sub_title']  ?? kDefaultSubTitle;
+    systemPrompt = (d['system_instruction'] ?? kDefaultSysPrompt)
+        .replaceAll(r'\n', '\n');
+    mistakeTag   = d['mistake_tag']    ?? kDefaultMistakeTag;
+    uploadStatus = d['upload_status']  ?? kUploadOn;
+    imgBBKey     = d['imgbb_api_key']  ?? kDefaultImgBBKey;
+    aiApi        = d['api']            ?? kDefaultApi;
+    totalHistory = int.tryParse('${d['total_history'] ?? kDefaultHistory}') ?? kDefaultHistory;
+    final app = d['app'] as Map<String, dynamic>? ?? {};
+    remoteVersion = app['version']  ?? kAppVersion;
+    updateNotes   = (app['update']  ?? '').replaceAll(r'\n', '\n');
+    downloadUrl   = app['download'] ?? '';
+  }
+
+  static Future<void> load() async {
+    try {
+      final url = '$kFirebaseUrl/config.json?auth=$kFirebaseSecret';
+      final res = await http.get(Uri.parse(url))
+          .timeout(const Duration(seconds: 8));
+      if (res.statusCode == 200) {
+        final d = jsonDecode(res.body);
+        if (d != null) fromMap(Map<String, dynamic>.from(d));
+      }
+    } catch (_) {}
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// § 4. FIREBASE REST API HELPER
+// ════════════════════════════════════════════════════════════
+
+class FirebaseDB {
+  static String _url(String path) =>
+      '$kFirebaseUrl/$path.json?auth=$kFirebaseSecret';
+
+  static Future<dynamic> get(String path) async {
+    try {
+      final res = await http.get(Uri.parse(_url(path)))
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200) return jsonDecode(res.body);
+    } catch (_) {}
+    return null;
+  }
+
+  static Future<bool> set(String path, dynamic data) async {
+    try {
+      final res = await http.put(Uri.parse(_url(path)),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(data)).timeout(const Duration(seconds: 10));
+      return res.statusCode == 200;
+    } catch (_) { return false; }
+  }
+
+  static Future<bool> patch(String path, Map<String, dynamic> data) async {
+    try {
+      final res = await http.patch(Uri.parse(_url(path)),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(data)).timeout(const Duration(seconds: 10));
+      return res.statusCode == 200;
+    } catch (_) { return false; }
+  }
+
+  static Future<bool> delete(String path) async {
+    try {
+      final res = await http.delete(Uri.parse(_url(path)))
+          .timeout(const Duration(seconds: 10));
+      return res.statusCode == 200;
+    } catch (_) { return false; }
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// § 5. AUTH SERVICE
+// ════════════════════════════════════════════════════════════
+
+class AuthUser {
+  final String uid;
+  final String name;
+  final String email;
+  AuthUser({required this.uid, required this.name, required this.email});
+
+  Map<String, dynamic> toMap() => {'uid': uid, 'name': name, 'email': email};
+  factory AuthUser.fromMap(Map<String, dynamic> m) =>
+      AuthUser(uid: m['uid'] ?? '', name: m['name'] ?? '', email: m['email'] ?? '');
+}
+
+class AuthService {
+  static AuthUser? _current;
+  static AuthUser? get current => _current;
+  static bool get isLoggedIn  => _current != null;
+  static File? _authFile;
+
+  static Future<void> init() async {
+    final dir  = await getApplicationDocumentsDirectory();
+    _authFile  = File('${dir.path}/skygen_auth.json');
+    if (await _authFile!.exists()) {
+      try {
+        final raw = await _authFile!.readAsString();
+        final d   = jsonDecode(raw);
+        _current  = AuthUser.fromMap(d);
+      } catch (_) {}
+    }
+  }
+
+  static String _hashPassword(String password) {
+    // Simple deterministic hash for storage (not production-grade)
+    var hash = 0;
+    for (final c in password.codeUnits) hash = ((hash << 5) - hash) + c;
+    return hash.toRadixString(16);
+  }
+
+  static String _makeUid(String email) =>
+      email.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_').toLowerCase();
+
+  static Future<String?> register(String name, String email, String password) async {
+    final uid = _makeUid(email);
+    // Check if exists
+    final existing = await FirebaseDB.get('users/$uid/profile');
+    if (existing != null) return 'Email already registered.';
+
+    final profile = {
+      'uid': uid, 'name': name, 'email': email,
+      'password': _hashPassword(password),
+      'createdAt': DateTime.now().millisecondsSinceEpoch,
+    };
+    final ok = await FirebaseDB.set('users/$uid/profile', profile);
+    if (!ok) return 'Registration failed. Check your internet.';
+
+    _current = AuthUser(uid: uid, name: name, email: email);
+    await _saveLocal();
+    return null;
+  }
+
+  static Future<String?> login(String email, String password) async {
+    final uid  = _makeUid(email);
+    final data = await FirebaseDB.get('users/$uid/profile');
+    if (data == null) return 'No account found with this email.';
+
+    final stored = data['password'] ?? '';
+    if (stored != _hashPassword(password)) return 'Incorrect password.';
+
+    _current = AuthUser(uid: uid, name: data['name'] ?? '', email: email);
+    await _saveLocal();
+    return null;
+  }
+
+  static Future<void> logout() async {
+    _current = null;
+    if (_authFile != null && await _authFile!.exists()) {
+      await _authFile!.delete();
+    }
+  }
+
+  static Future<void> updateName(String name) async {
+    if (_current == null) return;
+    _current = AuthUser(uid: _current!.uid, name: name, email: _current!.email);
+    await FirebaseDB.patch('users/${_current!.uid}/profile', {'name': name});
+    await _saveLocal();
+  }
+
+  static Future<void> _saveLocal() async {
+    if (_authFile == null || _current == null) return;
+    await _authFile!.writeAsString(jsonEncode(_current!.toMap()));
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// § 6. THEME NOTIFIER  (persisted)
+// ════════════════════════════════════════════════════════════
+
 class ThemeNotifier extends ChangeNotifier {
   bool _dark = false;
   bool get isDark => _dark;
-  void toggle() { _dark = !_dark; notifyListeners(); }
+
+  static File? _file;
+
+  Future<void> load() async {
+    final dir = await getApplicationDocumentsDirectory();
+    _file     = File('${dir.path}/skygen_theme.json');
+    if (await _file!.exists()) {
+      try {
+        final d = jsonDecode(await _file!.readAsString());
+        _dark   = d['dark'] == true;
+        notifyListeners();
+      } catch (_) {}
+    }
+  }
+
+  Future<void> toggle() async {
+    _dark = !_dark;
+    notifyListeners();
+    try { await _file?.writeAsString(jsonEncode({'dark': _dark})); } catch (_) {}
+  }
 }
+
 final themeNotifier = ThemeNotifier();
+
+// ════════════════════════════════════════════════════════════
+// § 7. COLOURS
+// ════════════════════════════════════════════════════════════
 
 class C {
   static bool dark = false;
@@ -50,18 +336,10 @@ class C {
   static const grad2 = Color(0xFF8B5CF6);
 }
 
-// ═══════════════════════════════════════════════════
-// 3. CONSTANTS
-// ═══════════════════════════════════════════════════
-const String kLogoUrl  = 'https://www.cdn.hyper-bd.site/photo/logo.png';
-const String kDevUrl   = 'https://www.cdn.hyper-bd.site/photo/dev.png';
-const String kImgBBKey = '4685fa1e1d227aec0ce07733cd571ff9';
-const String kDevTg    = 'https://t.me/BD_Prime_Minister';
-const String kDevWa    = 'https://wa.me/8801761844968';
+// ════════════════════════════════════════════════════════════
+// § 8. DATA MODELS
+// ════════════════════════════════════════════════════════════
 
-// ═══════════════════════════════════════════════════
-// 4. MODELS
-// ═══════════════════════════════════════════════════
 enum MsgType   { user, ai }
 enum GenStatus { waiting, streaming, completed, error, stopped }
 
@@ -134,9 +412,10 @@ class Session {
   );
 }
 
-// ═══════════════════════════════════════════════════
-// 5. TTS CACHE (in-memory + disk)
-// ═══════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
+// § 9. TTS CACHE
+// ════════════════════════════════════════════════════════════
+
 class TtsCache {
   static final Map<String, String> _mem = {};
   static Directory? _dir;
@@ -155,10 +434,7 @@ class TtsCache {
     if (_mem.containsKey(k)) return _mem[k];
     if (_dir == null) return null;
     final f = File('${_dir!.path}/$k.mp3');
-    if (await f.exists()) {
-      _mem[k] = f.path;
-      return f.path;
-    }
+    if (await f.exists()) { _mem[k] = f.path; return f.path; }
     return null;
   }
 
@@ -172,9 +448,10 @@ class TtsCache {
   }
 }
 
-// ═══════════════════════════════════════════════════
-// 6. ROOT APP
-// ═══════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
+// § 10. ROOT APP
+// ════════════════════════════════════════════════════════════
+
 class SkyGenApp extends StatefulWidget {
   const SkyGenApp({super.key});
   @override
@@ -187,6 +464,7 @@ class _SkyGenAppState extends State<SkyGenApp> {
     super.initState();
     TtsCache.init();
     themeNotifier.addListener(() => setState(() { C.dark = themeNotifier.isDark; }));
+    themeNotifier.load().then((_) => setState(() { C.dark = themeNotifier.isDark; }));
   }
 
   @override
@@ -198,31 +476,33 @@ class _SkyGenAppState extends State<SkyGenApp> {
       systemNavigationBarColor: C.bg,
       systemNavigationBarIconBrightness: C.dark ? Brightness.light : Brightness.dark,
     ));
-    final brightness = C.dark ? Brightness.dark : Brightness.light;
+    final br = C.dark ? Brightness.dark : Brightness.light;
     return MaterialApp(
-      title: 'SkyGen',
+      title: AppConfig.appName,
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        useMaterial3: true, brightness: brightness,
+        useMaterial3: true, brightness: br,
         scaffoldBackgroundColor: C.bg, primaryColor: C.accent,
         fontFamily: 'Roboto',
-        colorScheme: ColorScheme.fromSeed(seedColor: C.accent, brightness: brightness),
+        colorScheme: ColorScheme.fromSeed(seedColor: C.accent, brightness: br),
       ),
       home: const SplashScreen(),
     );
   }
 }
 
-// ═══════════════════════════════════════════════════
-// 7. REUSABLE LOGO CIRCLE
-// ═══════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
+// § 11. REUSABLE LOGO CIRCLE
+// ════════════════════════════════════════════════════════════
+
 class _LogoCircle extends StatelessWidget {
   final double size;
-  final String url;
-  const _LogoCircle({required this.size, this.url = kLogoUrl});
+  final String? urlOverride;
+  const _LogoCircle({required this.size, this.urlOverride});
 
   @override
   Widget build(BuildContext context) {
+    final url = urlOverride ?? AppConfig.logoUrl;
     return ClipOval(
       child: CachedNetworkImage(
         imageUrl: url, width: size, height: size, fit: BoxFit.cover,
@@ -230,7 +510,7 @@ class _LogoCircle extends StatelessWidget {
           width: size, height: size,
           decoration: const BoxDecoration(
               gradient: LinearGradient(colors: [C.grad1, C.grad2]), shape: BoxShape.circle),
-          child: Icon(Icons.person_rounded, color: Colors.white, size: size * 0.5),
+          child: Icon(Icons.school_rounded, color: Colors.white, size: size * 0.48),
         ),
         errorWidget: (_, __, ___) => Container(
           width: size, height: size,
@@ -243,9 +523,10 @@ class _LogoCircle extends StatelessWidget {
   }
 }
 
-// ═══════════════════════════════════════════════════
-// 8. SPLASH SCREEN  (improved animation)
-// ═══════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
+// § 12. SPLASH SCREEN
+// ════════════════════════════════════════════════════════════
+
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
   @override
@@ -259,10 +540,6 @@ class _SplashState extends State<SplashScreen> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      precacheImage(const NetworkImage(kLogoUrl), context);
-      precacheImage(const NetworkImage(kDevUrl), context);
-    });
 
     _logoCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
     _ringCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1800))..repeat();
@@ -274,11 +551,19 @@ class _SplashState extends State<SplashScreen> with TickerProviderStateMixin {
     _ringOpacity = Tween(begin: 0.6, end: 0.0).animate(CurvedAnimation(parent: _ringCtrl, curve: Curves.easeOut));
     _textFade    = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: _textCtrl, curve: Curves.easeIn));
 
+    // Load config + auth in parallel during splash
+    Future.wait([
+      AppConfig.load(),
+      AuthService.init(),
+    ]).then((_) {
+      if (mounted) setState(() {});
+    });
+
     _logoCtrl.forward().then((_) {
       _textCtrl.forward();
-      Future.delayed(const Duration(milliseconds: 1200), () {
+      Future.delayed(const Duration(milliseconds: 1400), () {
         if (mounted) {
-          _ringCtrl.dispose();
+          try { _ringCtrl.stop(); } catch (_) {}
           Navigator.of(context).pushReplacement(PageRouteBuilder(
             pageBuilder: (_, __, ___) => const ChatScreen(),
             transitionsBuilder: (_, a, __, child) => FadeTransition(opacity: a, child: child),
@@ -287,12 +572,17 @@ class _SplashState extends State<SplashScreen> with TickerProviderStateMixin {
         }
       });
     });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      precacheImage(NetworkImage(AppConfig.logoUrl), context);
+      precacheImage(NetworkImage(AppConfig.devLogoUrl), context);
+    });
   }
 
   @override
   void dispose() {
     _logoCtrl.dispose();
-    if (_ringCtrl.isAnimating) _ringCtrl.dispose();
+    try { _ringCtrl.dispose(); } catch (_) {}
     _textCtrl.dispose();
     super.dispose();
   }
@@ -307,63 +597,34 @@ class _SplashState extends State<SplashScreen> with TickerProviderStateMixin {
           builder: (_, __) => Column(mainAxisSize: MainAxisSize.min, children: [
             SizedBox(width: 160, height: 160,
               child: Stack(alignment: Alignment.center, children: [
-                // Pulsing ring
-                Transform.scale(
-                  scale: _ringScale.value,
-                  child: Opacity(
-                    opacity: _ringOpacity.value,
+                Transform.scale(scale: _ringScale.value,
+                  child: Opacity(opacity: _ringOpacity.value,
                     child: Container(width: 100, height: 100,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(color: C.accent, width: 2),
-                      ),
-                    ),
-                  ),
-                ),
-                // Second ring offset
-                Transform.scale(
-                  scale: (_ringScale.value * 0.7).clamp(0.0, 2.0),
-                  child: Opacity(
-                    opacity: (_ringOpacity.value * 0.5).clamp(0.0, 1.0),
+                      decoration: BoxDecoration(shape: BoxShape.circle,
+                          border: Border.all(color: C.accent, width: 2))))),
+                Transform.scale(scale: (_ringScale.value * 0.7).clamp(0.0, 2.0),
+                  child: Opacity(opacity: (_ringOpacity.value * 0.5).clamp(0.0, 1.0),
                     child: Container(width: 120, height: 120,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(color: C.grad2, width: 1.5),
-                      ),
-                    ),
-                  ),
-                ),
-                // Logo
-                FadeTransition(
-                  opacity: _logoFade,
-                  child: Transform.scale(
-                    scale: _logoScale.value,
+                      decoration: BoxDecoration(shape: BoxShape.circle,
+                          border: Border.all(color: C.grad2, width: 1.5))))),
+                FadeTransition(opacity: _logoFade,
+                  child: Transform.scale(scale: _logoScale.value,
                     child: Container(
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        boxShadow: [BoxShadow(
-                          color: C.accent.withOpacity(0.4),
-                          blurRadius: 24, spreadRadius: 2,
-                        )],
-                      ),
-                      child: _LogoCircle(size: 88),
-                    ),
-                  ),
-                ),
+                      decoration: BoxDecoration(shape: BoxShape.circle,
+                        boxShadow: [BoxShadow(color: C.accent.withOpacity(0.4), blurRadius: 24, spreadRadius: 2)]),
+                      child: _LogoCircle(size: 88)))),
               ]),
             ),
             const SizedBox(height: 20),
-            FadeTransition(
-              opacity: _textFade,
+            FadeTransition(opacity: _textFade,
               child: Column(children: [
-                Text('SkyGen', style: TextStyle(
-                    fontSize: 26, fontWeight: FontWeight.w800,
-                    color: C.ink, letterSpacing: -0.5)),
+                Text(AppConfig.appName,
+                    style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800,
+                        color: C.ink, letterSpacing: -0.5)),
                 const SizedBox(height: 4),
-                Text('English AI Tutor', style: TextStyle(
-                    fontSize: 13, color: C.ink2, fontWeight: FontWeight.w500)),
-              ]),
-            ),
+                Text(AppConfig.subTitle,
+                    style: TextStyle(fontSize: 13, color: C.ink2, fontWeight: FontWeight.w500)),
+              ])),
           ]),
         ),
       ),
@@ -371,9 +632,10 @@ class _SplashState extends State<SplashScreen> with TickerProviderStateMixin {
   }
 }
 
-// ═══════════════════════════════════════════════════
-// 9. CHAT SCREEN
-// ═══════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
+// § 13. CHAT SCREEN
+// ════════════════════════════════════════════════════════════
+
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
   @override
@@ -397,83 +659,22 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   // TTS
   final AudioPlayer _ttsPlayer  = AudioPlayer();
-  List<String>      _ttsQueue   = [];   // file paths ready to play
-  List<String>      _ttsPending = [];   // text chunks being fetched
+  List<String>      _ttsQueue   = [];
   bool   _isPlayingTTS          = false;
   bool   _isTTSLoading          = false;
   String? _speakingId;
 
-  // Scroll FAB
   bool _showScrollFab = false;
-
-  // AI Memory
   List<String> _aiMemory = [];
   String _searchQuery = '';
 
-  // Input has content?
+  // Update sheet
+  bool _updateSheetDismissed = false;
+
   bool get _canSend {
     final hasText = _inputCtrl.text.trim().isNotEmpty;
     final hasImg  = _pendingImages.isNotEmpty && !_pendingImages.any((p) => p.isLoading);
     return (hasText || hasImg) && !_isGenerating;
-  }
-
-  // ── SYSTEM PROMPT ──────────────────────────────
-  final String _sysBase = r"""
-You are "SkyGen" — a smart, friendly English language tutor and AI assistant for Bangladeshi students. Created by MD. Jaid Bin Siyam (Hyper Squad). Reveal creator only when user explicitly asks.
-
-════ FORMATTING & RESPONSE STYLE ════
-• Always structure responses clearly. Use bullet points, numbered lists, bold headers where helpful.
-• Educational answers: use **bold** for key terms, proper headings, clear examples.
-• Tables: use markdown tables for comparisons or structured data.
-• Keep responses well-organized and easy to scan — not walls of text.
-• Greetings (Hi/Hello/How are you) → 1-2 sentences, friendly emojis. 🙂
-• Questions (grammar, tenses, vocabulary) → COMPLETE answer with ALL subtypes, rules, examples. Never cut short.
-• Translation → translate ONLY, no commentary.
-• Writing tasks → full content.
-• Always match length to what the question needs.
-
-════ EMOJI USAGE ════
-• Greetings: always use 1-2 emojis.
-• Educational: use emojis for section headers sparingly (📌 ✏️ 📚 💡).
-• Avoid overusing.
-
-════ LANGUAGE RULES ════
-• Mirror user's language exactly: Bengali→Bengali, English→English, Banglish→Banglish.
-• Grammar terms always in English regardless of reply language.
-• Bengali responses may naturally include English grammar terms.
-
-════ TITLE GENERATION ════
-ONLY when [GENERATE_TITLE] tag is in instruction:
-Add at very END: <<<TITLE: Short meaningful title>>>
-Title: 3–6 words, concise, relevant. Professional. NEVER generate unless tag present.
-
-════ MEMORY SYSTEM ════
-If user shares important personal info (name, class, age, goals, learning level):
-Add at END: <<<MEMORY: ["single clear fact"]>>>
-Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One fact at a time unless truly multiple distinct facts exist. Never tell user you're saving memory.
-
-════ SUBJECTS ════
-① Grammar — All 12 tenses with full structure, rules, subtypes, examples
-② Vocabulary — meanings, synonyms, antonyms, idioms, phrasal verbs
-③ Translation — any language pair, translate only
-④ Writing — essays, letters, applications, CV, summaries
-⑤ Comprehension — passages, main idea, inference
-⑥ SSC/HSC Prep — board exam formats, model questions
-⑦ Images — analyze text/content from uploaded images
-⑧ Spoken English — daily phrases, pronunciation tips
-
-════ OFF-TOPIC ════
-"I can only help with English learning! 📚 What would you like to learn today?"
-""";
-
-  String _buildSysInstruction({bool needTitle = false}) {
-    String full = _sysBase;
-    if (needTitle) full += '\n\n[GENERATE_TITLE] — Add <<<TITLE: ...>>> at end of response.';
-    if (_aiMemory.isNotEmpty) {
-      full += '\n\n════ LONG-TERM USER MEMORY ════\n(Use this to personalize responses)\n';
-      for (final m in _aiMemory) full += '• $m\n';
-    }
-    return full;
   }
 
   @override
@@ -484,6 +685,10 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
     _scrollCtrl.addListener(_onScroll);
     _inputCtrl.addListener(() => setState(() {}));
     themeNotifier.addListener(() => setState(() {}));
+    // Show update after frame
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (AppConfig.hasUpdate && !_updateSheetDismissed) _showUpdateSheet();
+    });
   }
 
   @override
@@ -503,30 +708,64 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
     if (show != _showScrollFab) setState(() => _showScrollFab = show);
   }
 
-  // ── Storage ──────────────────────────────────────
+  // ── Storage ────────────────────────────────────────
   Future<void> _initStorage() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      _storageFile = File('${dir.path}/skygen_v6.json');
-      _memoryFile  = File('${dir.path}/skygen_mem_v2.json');
-      if (await _storageFile!.exists()) {
-        final raw = await _storageFile!.readAsString();
-        final d   = jsonDecode(raw);
-        setState(() {
-          _sessions = (d['sessions'] as List).map((e) => Session.fromMap(e)).toList();
-          _sortSessions();
-        });
-      }
+      _storageFile = File('${dir.path}/skygen_v7.json');
+      _memoryFile  = File('${dir.path}/skygen_mem_v3.json');
+
+      // Load memory
       if (await _memoryFile!.exists()) {
         final raw = await _memoryFile!.readAsString();
         final d   = jsonDecode(raw);
         setState(() => _aiMemory = List<String>.from(d['memory'] ?? []));
       }
+
+      if (AuthService.isLoggedIn) {
+        // Load from Firebase
+        await _loadFromFirebase();
+      } else {
+        // Load from local
+        if (await _storageFile!.exists()) {
+          final raw = await _storageFile!.readAsString();
+          final d   = jsonDecode(raw);
+          setState(() {
+            _sessions = (d['sessions'] as List).map((e) => Session.fromMap(e)).toList();
+            _sortSessions();
+          });
+        }
+      }
     } catch (_) {}
     _newTempSession();
   }
 
+  Future<void> _loadFromFirebase() async {
+    if (!AuthService.isLoggedIn) return;
+    final uid  = AuthService.current!.uid;
+    final data = await FirebaseDB.get('users/$uid/sessions');
+    if (data != null && data is Map) {
+      final list = <Session>[];
+      data.forEach((k, v) {
+        try { list.add(Session.fromMap(Map<String, dynamic>.from(v))); } catch (_) {}
+      });
+      setState(() { _sessions = list; _sortSessions(); });
+    }
+    // Load memory from Firebase
+    final memData = await FirebaseDB.get('users/$uid/memory');
+    if (memData is List) {
+      setState(() => _aiMemory = List<String>.from(memData));
+    }
+  }
+
   Future<void> _save() async {
+    if (AuthService.isLoggedIn) {
+      // Save to Firebase
+      final uid = AuthService.current!.uid;
+      final map = { for (final s in _sessions) s.id: s.toMap() };
+      await FirebaseDB.set('users/$uid/sessions', map);
+    }
+    // Always save locally too
     if (_storageFile == null) return;
     try {
       await _storageFile!.writeAsString(
@@ -535,15 +774,18 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
   }
 
   Future<void> _saveMemory() async {
+    if (AuthService.isLoggedIn) {
+      await FirebaseDB.set('users/${AuthService.current!.uid}/memory', _aiMemory);
+    }
     if (_memoryFile == null) return;
     try { await _memoryFile!.writeAsString(jsonEncode({'memory': _aiMemory})); } catch (_) {}
   }
 
   void _addToMemory(List<String> items) {
     for (final item in items) {
-      final trimmed = item.trim();
-      if (trimmed.length >= 20 && !_aiMemory.contains(trimmed)) {
-        _aiMemory.add(trimmed.length > 200 ? trimmed.substring(0, 200) : trimmed);
+      final t = item.trim();
+      if (t.length >= 20 && !_aiMemory.contains(t)) {
+        _aiMemory.add(t.length > 200 ? t.substring(0, 200) : t);
       }
     }
     if (_aiMemory.length > 10) _aiMemory = _aiMemory.sublist(_aiMemory.length - 10);
@@ -561,7 +803,7 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
 
   void _newTempSession() {
     setState(() {
-      _currentId     = 'temp${DateTime.now().millisecondsSinceEpoch}';
+      _currentId     = 'tmp${DateTime.now().millisecondsSinceEpoch}';
       _isTempSession = true;
       _isGenerating  = false;
       _inputCtrl.clear();
@@ -571,10 +813,8 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
 
   void _switchSession(String id) {
     setState(() {
-      _currentId     = id;
-      _isTempSession = false;
-      _isGenerating  = false;
-      _pendingImages.clear();
+      _currentId = id; _isTempSession = false;
+      _isGenerating = false; _pendingImages.clear();
     });
     Navigator.pop(context);
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBot(force: true));
@@ -585,8 +825,7 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
     if (force || !_showScrollFab) {
       _scrollCtrl.animateTo(
         _scrollCtrl.position.maxScrollExtent + 200,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
+        duration: const Duration(milliseconds: 300), curve: Curves.easeOut,
       );
     }
   }
@@ -600,7 +839,7 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
               : Session(id: _currentId, title: 'New Chat',
                   createdAt: DateTime.now().millisecondsSinceEpoch, messages: []));
 
-  // ── Network check ─────────────────────────────────
+  // ── Internet check ────────────────────────────────
   Future<bool> _hasInternet() async {
     try {
       final r = await http.get(Uri.parse('https://www.google.com'))
@@ -609,8 +848,12 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
     } catch (_) { return false; }
   }
 
-  // ── Image upload (ImgBB) ──────────────────────────
+  // ── Image upload ──────────────────────────────────
   Future<void> _pickImages() async {
+    if (AppConfig.uploadStatus != 'on') {
+      _showToast('Image upload is currently disabled.');
+      return;
+    }
     if (_pendingImages.length >= 3) { _showToast('Maximum 3 images allowed.'); return; }
     try {
       final files = await ImagePicker().pickMultiImage();
@@ -625,10 +868,10 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
 
   Future<void> _uploadAndAnalyze(PendingImage p) async {
     try {
-      final req = http.MultipartRequest(
-          'POST', Uri.parse('https://api.imgbb.com/1/upload?key=$kImgBBKey'));
+      final req = http.MultipartRequest('POST',
+          Uri.parse('https://api.imgbb.com/1/upload?key=${AppConfig.imgBBKey}'));
       req.files.add(await http.MultipartFile.fromPath('image', p.file.path));
-      final res  = await req.send();
+      final res = await req.send();
       if (res.statusCode == 200) {
         final body = await res.stream.bytesToString();
         final data = jsonDecode(body);
@@ -659,8 +902,8 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
 
   Future<void> _fetchDesc(PendingImage p) async {
     try {
-      final r = await http.get(Uri.parse(
-          'https://gen-z-describer.vercel.app/api?url=${p.uploadedUrl}'));
+      final r = await http.get(
+          Uri.parse('https://gen-z-describer.vercel.app/api?url=${p.uploadedUrl}'));
       if (r.statusCode == 200) {
         final d = jsonDecode(r.body);
         if (d['ok'] == true) p.description = d['results']['description'] as String?;
@@ -714,18 +957,34 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
       if (imgs[i].ocrText?.isNotEmpty == true) imgCtx += '  OCR: ${imgs[i].ocrText}\n';
       if (imgs[i].description?.isNotEmpty == true) imgCtx += '  Visual: ${imgs[i].description}\n';
     }
+
     final sess  = _sessions.firstWhere((s) => s.id == _currentId);
     final msgs  = sess.messages;
     String hist = '';
-    final start = max(0, msgs.length - 51);
+    final limit = AppConfig.totalHistory;
+    final start = max(0, msgs.length - (limit + 1));
     for (int i = start; i < msgs.length - 1; i++) {
       final m = msgs[i];
       if (m.status == GenStatus.completed) {
         hist += '${m.type == MsgType.user ? "User" : "AI"}: ${m.text}\n';
       }
     }
-    String full = '[System]\n${_buildSysInstruction(needTitle: needTitle)}\n\n';
-    if (hist.isNotEmpty)   full += '[History]\n$hist\n';
+
+    // Build user context section
+    String userCtx = '';
+    if (AuthService.isLoggedIn) {
+      userCtx += '\n════ USER INFO ════\n';
+      userCtx += '• Name: ${AuthService.current!.name}\n';
+      userCtx += '• Email: ${AuthService.current!.email}\n';
+    }
+    if (_aiMemory.isNotEmpty) {
+      userCtx += '\n════ USER LONG-TERM MEMORY ════\n(Use this to personalize responses)\n';
+      for (final m in _aiMemory) userCtx += '• $m\n';
+    }
+
+    String full = '[System Instruction]\n${AppConfig.systemPrompt}$userCtx\n\n';
+    if (needTitle) full += '[GENERATE_TITLE] — Add <<<TITLE: ...>>> at end of response.\n\n';
+    if (hist.isNotEmpty) full += '[Chat History]\n$hist\n';
     if (imgCtx.isNotEmpty) full += '[Images]\n$imgCtx\n';
     full += '[User]: ${userPrompt.isEmpty ? "(image sent)" : userPrompt}';
     return full;
@@ -738,15 +997,14 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
     _addAiMsg(aiId, '', GenStatus.waiting);
 
     try {
-      // Check internet first
       if (!await _hasInternet()) {
         _updateStatus(aiId, GenStatus.error,
-            text: '⚠️ No internet connection. Please check your network and try again.');
+            text: '⚠️ No internet connection. Please check your network.');
         return;
       }
 
       final client = http.Client();
-      final req    = http.Request('POST', Uri.parse('https://www.api.hyper-bd.site/Ai/'));
+      final req    = http.Request('POST', Uri.parse(AppConfig.aiApi));
       req.headers['Content-Type'] = 'application/json';
       req.body = jsonEncode({'q': _buildPrompt(prompt, imgs, needTitle: needTitle), 'format': 'sse'});
 
@@ -762,18 +1020,17 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
       if (res.statusCode != 200) {
         _updateStatus(aiId, GenStatus.error,
             text: '⚠️ API error (${res.statusCode}). Please try again.');
-        client.close();
-        return;
+        client.close(); return;
       }
 
       _updateStatus(aiId, GenStatus.streaming);
-      String streamed  = '';
-      String buf       = '';
-      bool firstChunk  = true;
+      String streamed = '';
+      String buf      = '';
+      bool   firstChunk = true;
 
       await for (final chunk in res.stream.transform(utf8.decoder)) {
         if (_stopRequested) {
-          _updateStatus(aiId, GenStatus.stopped, text: _cleanTags(streamed));
+          _finalizeAI(aiId, sess, streamed, needTitle);
           client.close();
           break;
         }
@@ -784,7 +1041,12 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
           buf        = buf.substring(idx + 2);
           if (line.startsWith('data: ')) {
             final ds = line.substring(6).trim();
-            if (ds == '[DONE]') break;
+            if (ds == '[DONE]') {
+              // ── RESPONSE COMPLETE → finalize immediately ──
+              _finalizeAI(aiId, sess, streamed, needTitle);
+              client.close();
+              return;
+            }
             try {
               final j   = jsonDecode(ds);
               final ans = j['results']?['answer'] as String?;
@@ -799,41 +1061,50 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
         }
       }
 
-      if (!_stopRequested) {
-        // Parse TITLE
-        if (needTitle) {
-          final m = RegExp(r'<<<TITLE:\s*(.+?)>>>').firstMatch(streamed);
-          if (m != null) {
-            final t  = m.group(1)!.trim();
-            final si = _sessions.indexWhere((s) => s.id == _currentId);
-            if (si != -1) setState(() { _sessions[si].title = t; _sessions[si].titleGenerated = true; });
-            _save();
-          }
-        }
-        // Parse MEMORY
-        final mm = RegExp(r'<<<MEMORY:\s*(\[[\s\S]+?\])>>>').firstMatch(streamed);
-        if (mm != null) {
-          try {
-            final arr = jsonDecode(mm.group(1)!) as List;
-            _addToMemory(arr.map((e) => e.toString()).toList());
-          } catch (_) {}
-        }
-        _updateStatus(aiId, GenStatus.completed, text: _cleanTags(streamed));
-      }
+      if (!_stopRequested) _finalizeAI(aiId, sess, streamed, needTitle);
     } catch (e) {
       final msg = e.toString().toLowerCase();
       if (msg.contains('socket') || msg.contains('network') ||
-          msg.contains('dns') || msg.contains('connection')) {
-        _updateStatus(aiId, GenStatus.error,
-            text: '⚠️ No internet connection. Please check your network.');
+          msg.contains('dns')    || msg.contains('connection')) {
+        _updateStatus(aiId, GenStatus.error, text: '⚠️ No internet connection.');
       } else {
-        _updateStatus(aiId, GenStatus.error,
-            text: '⚠️ Something went wrong. Please try again.');
+        _updateStatus(aiId, GenStatus.error, text: '⚠️ Something went wrong. Please try again.');
       }
     } finally {
       if (mounted) setState(() => _isGenerating = false);
       _save();
     }
+  }
+
+  // Called exactly once when response is complete (either [DONE] or stream end)
+  void _finalizeAI(String aiId, Session sess, String streamed, bool needTitle) {
+    if (!mounted) return;
+
+    // Parse TITLE
+    if (needTitle) {
+      final m = RegExp(r'<<<TITLE:\s*(.+?)>>>').firstMatch(streamed);
+      if (m != null) {
+        final t  = m.group(1)!.trim();
+        final si = _sessions.indexWhere((s) => s.id == _currentId);
+        if (si != -1) {
+          setState(() { _sessions[si].title = t; _sessions[si].titleGenerated = true; });
+          _save();
+        }
+      }
+    }
+
+    // Parse MEMORY
+    final mm = RegExp(r'<<<MEMORY:\s*(\[[\s\S]+?\])>>>').firstMatch(streamed);
+    if (mm != null) {
+      try {
+        final arr = jsonDecode(mm.group(1)!) as List;
+        _addToMemory(arr.map((e) => e.toString()).toList());
+      } catch (_) {}
+    }
+
+    final clean = _cleanTags(streamed);
+    // Mark completed → triggers FadeTransition in bubble immediately
+    _updateStatus(aiId, GenStatus.completed, text: clean);
   }
 
   String _cleanTags(String t) => t
@@ -889,7 +1160,7 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
     }
   }
 
-  // ── TTS  (parallel pre-fetch + disk cache) ────────
+  // ── TTS ───────────────────────────────────────────
   Future<void> _handleTTS(String id, String text) async {
     if (_speakingId == id && _isPlayingTTS) {
       await _ttsPlayer.pause();
@@ -901,27 +1172,19 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
       setState(() => _isPlayingTTS = true);
       return;
     }
-
     await _ttsPlayer.stop();
     setState(() {
-      _speakingId   = id;
-      _isPlayingTTS = false;
-      _isTTSLoading = true;
-      _ttsQueue.clear();
-      _ttsPending.clear();
+      _speakingId   = id; _isPlayingTTS = false;
+      _isTTSLoading = true; _ttsQueue.clear();
     });
 
     final chunks = _chunkText(text.replaceAll(RegExp(r'```[\s\S]*?```'), ''));
     if (chunks.isEmpty) {
-      setState(() { _isTTSLoading = false; _speakingId = null; });
-      return;
+      setState(() { _isTTSLoading = false; _speakingId = null; }); return;
     }
-
-    // Fetch all chunks in parallel (with cache)
     try {
       final paths = await Future.wait(chunks.map(_fetchTTSPath));
       if (!mounted) return;
-      // First chunk ready → start playing immediately, others will queue
       setState(() { _isTTSLoading = false; _isPlayingTTS = true; _ttsQueue = paths; });
       await _playNextTTS();
     } catch (_) {
@@ -930,11 +1193,8 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
   }
 
   Future<String> _fetchTTSPath(String text) async {
-    // Check cache first
     final cached = await TtsCache.get(text);
     if (cached != null) return cached;
-
-    // Download
     final url = 'https://murf.ai/Prod/anonymous-tts/audio'
         '?text=${Uri.encodeComponent(text)}'
         '&voiceId=VM017230562791058FV&style=Conversational';
@@ -943,7 +1203,7 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
     if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
       return await TtsCache.store(text, res.bodyBytes);
     }
-    throw Exception('TTS fetch failed');
+    throw Exception('TTS failed');
   }
 
   List<String> _chunkText(String text, {int size = 190}) {
@@ -965,11 +1225,10 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
 
   Future<void> _playNextTTS() async {
     if (_ttsQueue.isEmpty) {
-      setState(() { _isPlayingTTS = false; _speakingId = null; });
-      return;
+      setState(() { _isPlayingTTS = false; _speakingId = null; }); return;
     }
-    final path = _ttsQueue.removeAt(0);
-    try { await _ttsPlayer.play(DeviceFileSource(path)); } catch (_) { _playNextTTS(); }
+    try { await _ttsPlayer.play(DeviceFileSource(_ttsQueue.removeAt(0))); }
+    catch (_) { _playNextTTS(); }
   }
 
   // ── Reaction ──────────────────────────────────────
@@ -990,7 +1249,7 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
     _save();
   }
 
-  // ── Delete confirm ────────────────────────────────
+  // ── Confirm dialogs ───────────────────────────────
   Future<bool> _confirmDelete(BuildContext ctx) async {
     return await showDialog<bool>(
       context: ctx, barrierDismissible: false,
@@ -998,27 +1257,22 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
         backgroundColor: C.card,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Text('Delete Chat', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
-        content: Text('Are you sure? This cannot be undone.',
-            style: TextStyle(fontSize: 14, color: C.ink2)),
+        content: Text('Are you sure? This cannot be undone.', style: TextStyle(fontSize: 14, color: C.ink2)),
         actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         actions: [Row(children: [
           Expanded(child: OutlinedButton(
             onPressed: () => Navigator.pop(context, false),
-            style: OutlinedButton.styleFrom(
-              side: BorderSide(color: C.border),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              padding: const EdgeInsets.symmetric(vertical: 12),
-            ),
+            style: OutlinedButton.styleFrom(side: BorderSide(color: C.border),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 12)),
             child: Text('Cancel', style: TextStyle(color: C.ink2, fontWeight: FontWeight.w600)),
           )),
           const SizedBox(width: 10),
           Expanded(child: ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: C.red, elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              padding: const EdgeInsets.symmetric(vertical: 12),
-            ),
+            style: ElevatedButton.styleFrom(backgroundColor: C.red, elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 12)),
             child: const Text('Delete', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
           )),
         ])],
@@ -1026,7 +1280,6 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
     ) ?? false;
   }
 
-  // ── Rename dialog ─────────────────────────────────
   Future<void> _renameSession(Session s) async {
     final ctrl = TextEditingController(text: s.title);
     final ok   = await showDialog<bool>(
@@ -1036,20 +1289,13 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Text('Rename Chat', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
         content: TextField(
-          controller: ctrl,
-          maxLength: 100, maxLines: 1,
+          controller: ctrl, maxLength: 100, maxLines: 1,
           style: TextStyle(fontSize: 14, color: C.ink),
           decoration: InputDecoration(
-            counterText: '',
-            hintText: 'Chat title…',
-            hintStyle: TextStyle(color: C.ink2),
+            counterText: '', hintText: 'Chat title…', hintStyle: TextStyle(color: C.ink2),
             filled: true, fillColor: C.bg,
-            border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: BorderSide(color: C.border)),
-            focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: BorderSide(color: C.accent)),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: C.border)),
+            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: C.accent)),
             contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           ),
         ),
@@ -1057,37 +1303,31 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
         actions: [Row(children: [
           Expanded(child: OutlinedButton(
             onPressed: () => Navigator.pop(context, false),
-            style: OutlinedButton.styleFrom(
-              side: BorderSide(color: C.border),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              padding: const EdgeInsets.symmetric(vertical: 12),
-            ),
+            style: OutlinedButton.styleFrom(side: BorderSide(color: C.border),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 12)),
             child: Text('Cancel', style: TextStyle(color: C.ink2, fontWeight: FontWeight.w600)),
           )),
           const SizedBox(width: 10),
           Expanded(child: ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: C.accent, elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              padding: const EdgeInsets.symmetric(vertical: 12),
-            ),
+            style: ElevatedButton.styleFrom(backgroundColor: C.accent, elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 12)),
             child: const Text('Save', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
           )),
         ])],
       ),
     ) ?? false;
+    final newTitle = ctrl.text.trim();
     ctrl.dispose();
-    if (ok) {
-      final newTitle = ctrl.text.trim();
-      if (newTitle.isNotEmpty) {
-        setState(() => s.title = newTitle);
-        _save();
-      }
+    if (ok && newTitle.isNotEmpty) {
+      setState(() => s.title = newTitle);
+      _save();
     }
   }
 
-  // ── Toast (center overlay) ────────────────────────
+  // ── Toast ─────────────────────────────────────────
   OverlayEntry? _toastEntry;
   void _showToast(String msg) {
     _toastEntry?.remove();
@@ -1095,16 +1335,13 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
       builder: (_) => Positioned(
         left: 40, right: 40,
         top: MediaQuery.of(context).size.height * 0.44,
-        child: Material(
-          color: Colors.transparent,
+        child: Material(color: Colors.transparent,
           child: Center(child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
-            decoration: BoxDecoration(
-                color: C.ink.withOpacity(0.9), borderRadius: BorderRadius.circular(20)),
+            decoration: BoxDecoration(color: C.ink.withOpacity(0.9), borderRadius: BorderRadius.circular(20)),
             child: Text(msg, style: const TextStyle(color: Colors.white, fontSize: 13),
                 textAlign: TextAlign.center),
-          )),
-        ),
+          ))),
       ),
     );
     Overlay.of(context).insert(_toastEntry!);
@@ -1113,13 +1350,80 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
     });
   }
 
-  // ── Image fullscreen viewer ───────────────────────
-  void _openImage(String url) => Navigator.push(context, MaterialPageRoute(
-      builder: (_) => _ImageViewerPage(imageUrl: url)));
+  void _openImage(String url) => Navigator.push(
+      context, MaterialPageRoute(builder: (_) => _ImageViewerPage(imageUrl: url)));
 
-  // ═══════════════════════════════════════════════
+  // ── Update sheet ──────────────────────────────────
+  void _showUpdateSheet() {
+    showModalBottomSheet(
+      context: context,
+      isDismissible: false,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _UpdateSheet(
+        onDismiss: () { setState(() => _updateSheetDismissed = true); Navigator.pop(context); },
+      ),
+    );
+  }
+
+  // ── Settings ──────────────────────────────────────
+  void _showSettings() {
+    Navigator.pop(context);
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _SettingsSheet(
+        aiMemory: _aiMemory,
+        hasUpdate: AppConfig.hasUpdate && !_updateSheetDismissed,
+        onClearMemory: (list) { setState(() => _aiMemory = list); _saveMemory(); },
+        onClearAllChats: () async {
+          final ok = await showDialog<bool>(
+            context: context,
+            builder: (_) => AlertDialog(
+              backgroundColor: C.card,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: Text('Delete All Chats', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
+              content: Text('All chats deleted. Memory will remain.', style: TextStyle(fontSize: 14, color: C.ink2)),
+              actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              actions: [Row(children: [
+                Expanded(child: OutlinedButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  style: OutlinedButton.styleFrom(side: BorderSide(color: C.border),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12)),
+                  child: Text('Cancel', style: TextStyle(color: C.ink2, fontWeight: FontWeight.w600)),
+                )),
+                const SizedBox(width: 10),
+                Expanded(child: ElevatedButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  style: ElevatedButton.styleFrom(backgroundColor: C.accent, elevation: 0,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12)),
+                  child: const Text('Delete All', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                )),
+              ])],
+            ),
+          ) ?? false;
+          if (ok) {
+            setState(() { _sessions.clear(); _newTempSession(); });
+            _save();
+            HapticFeedback.heavyImpact();
+          }
+        },
+        onLoggedOut: () {
+          setState(() { _sessions.clear(); _aiMemory = []; });
+          _save();
+          _newTempSession();
+        },
+      ),
+    );
+  }
+
+  // ══════════════════════════════════════════════════
   // BUILD
-  // ═══════════════════════════════════════════════
+  // ══════════════════════════════════════════════════
+
   @override
   Widget build(BuildContext context) {
     final msgs = _curSession.messages;
@@ -1131,8 +1435,7 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
       body: Stack(children: [
         Column(children: [
           Expanded(
-            child: msgs.isEmpty
-                ? _buildWelcome()
+            child: msgs.isEmpty ? _buildWelcome()
                 : ListView.builder(
                     controller: _scrollCtrl,
                     physics: const ClampingScrollPhysics(),
@@ -1145,10 +1448,7 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
                         isPlayingTTS: _isPlayingTTS && _speakingId == msgs[i].id,
                         isTTSLoading: _isTTSLoading && _speakingId == msgs[i].id,
                         onSpeak:    (id, t) => _handleTTS(id, t),
-                        onCopy:     (t) {
-                          Clipboard.setData(ClipboardData(text: t));
-                          _showToast('Copied ✓');
-                        },
+                        onCopy:     (t) { Clipboard.setData(ClipboardData(text: t)); _showToast('Copied ✓'); },
                         onLike:     (id) => _setReaction(id, true),
                         onDislike:  (id) => _setReaction(id, false),
                         onImageTap: (url) => _openImage(url),
@@ -1158,7 +1458,6 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
           ),
           _buildInput(),
         ]),
-        // Scroll FAB
         AnimatedPositioned(
           duration: const Duration(milliseconds: 200),
           bottom: _showScrollFab ? _inputHeight + 12 : -60,
@@ -1178,54 +1477,38 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
     return 72 + pad + (_pendingImages.isNotEmpty ? 72 : 0);
   }
 
-  // ── AppBar ─────────────────────────────────────────
   PreferredSizeWidget _buildAppBar() {
     return AppBar(
-      backgroundColor: C.card,
-      elevation: 0, scrolledUnderElevation: 0,
+      backgroundColor: C.card, elevation: 0, scrolledUnderElevation: 0,
       toolbarHeight: 52, leadingWidth: 130,
       leading: Row(children: [
         const SizedBox(width: 4),
-        Tooltip(
-          message: 'Menu',
+        Tooltip(message: 'Menu',
           child: Material(color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(10),
+            child: InkWell(borderRadius: BorderRadius.circular(10),
               onTap: () => _scaffoldKey.currentState?.openDrawer(),
               child: SizedBox(width: 40, height: 40,
-                  child: Icon(Icons.menu_rounded, color: C.ink, size: 22)),
-            ),
-          ),
-        ),
+                  child: Icon(Icons.menu_rounded, color: C.ink, size: 22))))),
         const SizedBox(width: 6),
-        Text('SkyGen', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800,
-            color: C.ink, letterSpacing: -0.2)),
+        Text(AppConfig.appName, style: TextStyle(
+            fontSize: 17, fontWeight: FontWeight.w800, color: C.ink, letterSpacing: -0.2)),
       ]),
       actions: [
-        Tooltip(
-          message: 'New Chat',
+        Tooltip(message: 'New Chat',
           child: Material(color: Colors.transparent, shape: const CircleBorder(),
-            child: InkWell(
-              customBorder: const CircleBorder(),
+            child: InkWell(customBorder: const CircleBorder(),
               onTap: () { if (!_isTempSession) _newTempSession(); },
               child: Container(width: 38, height: 38,
-                decoration: BoxDecoration(shape: BoxShape.circle,
-                    border: Border.all(color: C.border, width: 1.5)),
-                child: Icon(Icons.add_rounded, color: C.ink, size: 20)),
-            ),
-          ),
-        ),
+                  decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: C.border, width: 1.5)),
+                  child: Icon(Icons.add_rounded, color: C.ink, size: 20))))),
         const SizedBox(width: 12),
       ],
     );
   }
 
-  // ── Drawer ─────────────────────────────────────────
   Widget _buildDrawer() {
-    final filtered = _searchQuery.isEmpty
-        ? _sessions
-        : _sessions.where((s) =>
-            s.title.toLowerCase().contains(_searchQuery.toLowerCase())).toList();
+    final filtered = _searchQuery.isEmpty ? _sessions
+        : _sessions.where((s) => s.title.toLowerCase().contains(_searchQuery.toLowerCase())).toList();
 
     return Drawer(
       backgroundColor: C.card,
@@ -1237,50 +1520,31 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
           child: Row(children: [
             _LogoCircle(size: 34),
             const SizedBox(width: 9),
-            Text('SkyGen', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: C.ink)),
+            Text(AppConfig.appName, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: C.ink)),
             const Spacer(),
-            // Theme toggle icon
-            Tooltip(
-              message: C.dark ? 'Light Mode' : 'Dark Mode',
+            // Theme toggle
+            Tooltip(message: C.dark ? 'Light Mode' : 'Dark Mode',
               child: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 300),
-                transitionBuilder: (child, anim) => RotationTransition(
-                    turns: anim, child: FadeTransition(opacity: anim, child: child)),
-                child: Material(
-                  key: ValueKey(C.dark),
-                  color: Colors.transparent,
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(8),
+                transitionBuilder: (child, anim) => RotationTransition(turns: anim,
+                    child: FadeTransition(opacity: anim, child: child)),
+                child: Material(key: ValueKey(C.dark), color: Colors.transparent,
+                  child: InkWell(borderRadius: BorderRadius.circular(8),
                     onTap: () { themeNotifier.toggle(); HapticFeedback.lightImpact(); },
-                    child: Container(
-                      width: 34, height: 34,
-                      alignment: Alignment.center,
-                      child: Icon(
-                        C.dark ? Icons.wb_sunny_rounded : Icons.nightlight_round,
-                        color: C.dark ? const Color(0xFFFBBF24) : const Color(0xFF6366F1),
-                        size: 18,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
+                    child: Container(width: 34, height: 34, alignment: Alignment.center,
+                      child: Icon(C.dark ? Icons.wb_sunny_rounded : Icons.nightlight_round,
+                          color: C.dark ? const Color(0xFFFBBF24) : const Color(0xFF6366F1),
+                          size: 18)))),
+              )),
             const SizedBox(width: 4),
-            // New chat icon only
-            Tooltip(
-              message: 'New Chat',
+            // New chat
+            Tooltip(message: 'New Chat',
               child: Material(color: Colors.transparent,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(8),
+                child: InkWell(borderRadius: BorderRadius.circular(8),
                   onTap: () { if (!_isTempSession) _newTempSession(); Navigator.pop(context); },
-                  child: Container(
-                    width: 34, height: 34,
-                    decoration: BoxDecoration(color: C.accentL, borderRadius: BorderRadius.circular(8)),
-                    child: Icon(Icons.add_rounded, color: C.accent, size: 18),
-                  ),
-                ),
-              ),
-            ),
+                  child: Container(width: 34, height: 34,
+                      decoration: BoxDecoration(color: C.accentL, borderRadius: BorderRadius.circular(8)),
+                      child: Icon(Icons.add_rounded, color: C.accent, size: 18))))),
           ]),
         ),
 
@@ -1289,8 +1553,7 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
           padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
           child: Container(
             height: 36,
-            decoration: BoxDecoration(color: C.bg, borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: C.border)),
+            decoration: BoxDecoration(color: C.bg, borderRadius: BorderRadius.circular(10), border: Border.all(color: C.border)),
             child: Row(children: [
               const SizedBox(width: 10),
               Icon(Icons.search_rounded, color: C.ink2, size: 15),
@@ -1299,8 +1562,7 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
                 controller: _searchCtrl,
                 style: TextStyle(fontSize: 13, color: C.ink),
                 decoration: InputDecoration(
-                  hintText: 'Search chats…',
-                  hintStyle: TextStyle(color: C.ink2, fontSize: 13),
+                  hintText: 'Search chats…', hintStyle: TextStyle(color: C.ink2, fontSize: 13),
                   border: InputBorder.none, isDense: true, contentPadding: EdgeInsets.zero,
                 ),
                 onChanged: (v) => setState(() => _searchQuery = v),
@@ -1309,15 +1571,13 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
                 GestureDetector(
                   onTap: () { _searchCtrl.clear(); setState(() => _searchQuery = ''); },
                   child: Padding(padding: const EdgeInsets.only(right: 8),
-                      child: Icon(Icons.close_rounded, color: C.ink2, size: 13)),
-                ),
+                      child: Icon(Icons.close_rounded, color: C.ink2, size: 13))),
             ]),
           ),
         ),
 
         Divider(height: 1, color: C.border),
 
-        // Session list with AnimatedList-style
         Expanded(
           child: filtered.isEmpty
               ? Center(child: Text('No chats yet.', style: TextStyle(color: C.ink2, fontSize: 13)))
@@ -1332,14 +1592,10 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
                       duration: const Duration(milliseconds: 200),
                       margin: const EdgeInsets.symmetric(vertical: 1),
                       decoration: BoxDecoration(
-                        color: active ? C.accentL : Colors.transparent,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Material(
-                        color: Colors.transparent,
-                        borderRadius: BorderRadius.circular(10),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(10),
+                          color: active ? C.accentL : Colors.transparent,
+                          borderRadius: BorderRadius.circular(10)),
+                      child: Material(color: Colors.transparent, borderRadius: BorderRadius.circular(10),
+                        child: InkWell(borderRadius: BorderRadius.circular(10),
                           onTap: () => _switchSession(s.id),
                           child: Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
@@ -1347,8 +1603,7 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
                               Icon(s.isPinned ? Icons.push_pin_rounded : Icons.chat_bubble_outline_rounded,
                                   size: 13, color: active ? C.accent : C.ink2),
                               const SizedBox(width: 8),
-                              Expanded(child: Text(s.title,
-                                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                              Expanded(child: Text(s.title, maxLines: 1, overflow: TextOverflow.ellipsis,
                                   style: TextStyle(fontSize: 13,
                                       fontWeight: active ? FontWeight.w700 : FontWeight.w500,
                                       color: active ? C.accent : C.ink))),
@@ -1379,11 +1634,9 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
                                 },
                                 itemBuilder: (_) => [
                                   PopupMenuItem(value: 'pin', child: Row(children: [
-                                    Icon(s.isPinned ? Icons.push_pin_outlined : Icons.push_pin_rounded,
-                                        size: 14, color: C.accent),
+                                    Icon(s.isPinned ? Icons.push_pin_outlined : Icons.push_pin_rounded, size: 14, color: C.accent),
                                     const SizedBox(width: 8),
-                                    Text(s.isPinned ? 'Unpin' : 'Pin',
-                                        style: TextStyle(fontSize: 13, color: C.ink)),
+                                    Text(s.isPinned ? 'Unpin' : 'Pin', style: TextStyle(fontSize: 13, color: C.ink)),
                                   ])),
                                   PopupMenuItem(value: 'rename', child: Row(children: [
                                     Icon(Icons.edit_rounded, size: 14, color: C.ink2),
@@ -1407,7 +1660,50 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
         ),
 
         Divider(height: 1, color: C.border),
-        // Settings button
+
+        // Auth section in drawer
+        if (!AuthService.isLoggedIn)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+            child: Row(children: [
+              Expanded(child: OutlinedButton(
+                onPressed: () { Navigator.pop(context); _openAuthPage(isLogin: true); },
+                style: OutlinedButton.styleFrom(
+                    side: BorderSide(color: C.border),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    padding: const EdgeInsets.symmetric(vertical: 10)),
+                child: Text('Log In', style: TextStyle(color: C.ink, fontSize: 13, fontWeight: FontWeight.w600)),
+              )),
+              const SizedBox(width: 8),
+              Expanded(child: ElevatedButton(
+                onPressed: () { Navigator.pop(context); _openAuthPage(isLogin: false); },
+                style: ElevatedButton.styleFrom(backgroundColor: C.accent, elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    padding: const EdgeInsets.symmetric(vertical: 10)),
+                child: const Text('Register', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+              )),
+            ]),
+          )
+        else
+          InkWell(
+            onTap: () { Navigator.pop(context); _showProfileSheet(); },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(children: [
+                Container(width: 32, height: 32,
+                  decoration: BoxDecoration(color: C.accentL, borderRadius: BorderRadius.circular(16)),
+                  child: Icon(Icons.person_rounded, color: C.accent, size: 16)),
+                const SizedBox(width: 10),
+                Expanded(child: Text(AuthService.current!.name, style: TextStyle(
+                    fontSize: 13, color: C.ink, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                Icon(Icons.chevron_right_rounded, size: 16, color: C.ink2),
+              ]),
+            ),
+          ),
+
+        Divider(height: 1, color: C.border),
+
+        // Settings
         InkWell(
           onTap: () { HapticFeedback.lightImpact(); _showSettings(); },
           child: Padding(
@@ -1421,10 +1717,11 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
             ]),
           ),
         ),
+
         Divider(height: 1, color: C.border),
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Text('SkyGen can make mistake, double check output',
+          child: Text(AppConfig.mistakeTag,
               style: TextStyle(fontSize: 10, color: C.ink2),
               textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis),
         ),
@@ -1432,58 +1729,41 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
     );
   }
 
-  // ── Settings sheet ────────────────────────────────
-  void _showSettings() {
-    Navigator.pop(context);
+  void _openAuthPage({required bool isLogin}) {
+    Navigator.push(context, PageRouteBuilder(
+      pageBuilder: (_, __, ___) => _AuthPage(startWithLogin: isLogin,
+        onSuccess: () {
+          Navigator.pop(context);
+          setState(() {});
+          _initStorage();
+        },
+      ),
+      transitionsBuilder: (_, a, __, child) =>
+          SlideTransition(position: Tween(begin: const Offset(1, 0), end: Offset.zero)
+              .animate(CurvedAnimation(parent: a, curve: Curves.easeOut)), child: child),
+      transitionDuration: const Duration(milliseconds: 300),
+    ));
+  }
+
+  void _showProfileSheet() {
     showModalBottomSheet(
       context: context,
-      isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => _SettingsSheet(
-        aiMemory: _aiMemory,
-        onClearMemory: (list) { setState(() => _aiMemory = list); _saveMemory(); },
-        onClearAllChats: () async {
-          final ok = await showDialog<bool>(
-            context: context,
-            builder: (_) => AlertDialog(
-              backgroundColor: C.card,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              title: Text('Delete All Chats',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
-              content: Text('All chats will be deleted. Memory will remain.',
-                  style: TextStyle(fontSize: 14, color: C.ink2)),
-              actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              actions: [Row(children: [
-                Expanded(child: OutlinedButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  style: OutlinedButton.styleFrom(side: BorderSide(color: C.border),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.symmetric(vertical: 12)),
-                  child: Text('Cancel', style: TextStyle(color: C.ink2, fontWeight: FontWeight.w600)),
-                )),
-                const SizedBox(width: 10),
-                Expanded(child: ElevatedButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  style: ElevatedButton.styleFrom(backgroundColor: C.red, elevation: 0,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.symmetric(vertical: 12)),
-                  child: const Text('Delete All',
-                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-                )),
-              ])],
-            ),
-          ) ?? false;
-          if (ok) {
-            setState(() { _sessions.clear(); _newTempSession(); });
+      isScrollControlled: true,
+      builder: (_) => _ProfileSheet(
+        onLoggedOut: () {
+          Navigator.pop(context);
+          AuthService.logout().then((_) {
+            setState(() { _sessions.clear(); _aiMemory = []; });
             _save();
-            HapticFeedback.heavyImpact();
-          }
+            _newTempSession();
+          });
         },
+        onNameUpdated: () => setState(() {}),
       ),
     );
   }
 
-  // ── Welcome screen ────────────────────────────────
   Widget _buildWelcome() {
     return Center(
       child: SingleChildScrollView(
@@ -1495,60 +1775,45 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink),
               textAlign: TextAlign.center),
           const SizedBox(height: 28),
-          GridView.builder(
+          GridView.count(
             shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2, childAspectRatio: 1.75,
-              crossAxisSpacing: 10, mainAxisSpacing: 10,
-            ),
-            itemCount: 4,
-            itemBuilder: (ctx, i) {
-              final cards = [
-                {'icon': Icons.auto_fix_high_rounded, 'label': 'Grammar Check',  'color': C.grad1},
-                {'icon': Icons.translate_rounded,     'label': 'Translation',    'color': C.green},
-                {'icon': Icons.school_rounded,        'label': 'Learn Tenses',   'color': const Color(0xFFF59E0B)},
-                {'icon': Icons.edit_note_rounded,     'label': 'Essay Writing',  'color': C.red},
-              ];
-              final c = cards[i];
-              return Material(
-                color: C.card, borderRadius: BorderRadius.circular(14),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(14), onTap: () {},
-                  child: Container(
-                    decoration: BoxDecoration(
-                        border: Border.all(color: C.border), borderRadius: BorderRadius.circular(14)),
-                    padding: const EdgeInsets.all(13),
-                    child: Row(children: [
-                      Container(
-                        width: 30, height: 30,
-                        decoration: BoxDecoration(
-                            color: (c['color'] as Color).withOpacity(0.12),
-                            borderRadius: BorderRadius.circular(8)),
-                        child: Icon(c['icon'] as IconData, color: c['color'] as Color, size: 15),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(child: Text(c['label'] as String,
-                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: C.ink))),
-                    ]),
-                  ),
-                ),
-              );
-            },
+            crossAxisCount: 2, childAspectRatio: 1.75,
+            crossAxisSpacing: 10, mainAxisSpacing: 10,
+            children: [
+              _welcomeCard(Icons.auto_fix_high_rounded, 'Grammar Check',  C.grad1),
+              _welcomeCard(Icons.translate_rounded,     'Translation',    C.green),
+              _welcomeCard(Icons.school_rounded,        'Learn Tenses',   const Color(0xFFF59E0B)),
+              _welcomeCard(Icons.edit_note_rounded,     'Essay Writing',  C.red),
+            ],
           ),
         ]),
       ),
     );
   }
 
-  // ── Input area ────────────────────────────────────
+  Widget _welcomeCard(IconData icon, String label, Color color) {
+    return Material(color: C.card, borderRadius: BorderRadius.circular(14),
+      child: InkWell(borderRadius: BorderRadius.circular(14), onTap: () {},
+        child: Container(
+          decoration: BoxDecoration(border: Border.all(color: C.border), borderRadius: BorderRadius.circular(14)),
+          padding: const EdgeInsets.all(13),
+          child: Row(children: [
+            Container(width: 30, height: 30,
+              decoration: BoxDecoration(color: color.withOpacity(0.12), borderRadius: BorderRadius.circular(8)),
+              child: Icon(icon, color: color, size: 15)),
+            const SizedBox(width: 10),
+            Expanded(child: Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: C.ink))),
+          ]),
+        )));
+  }
+
   Widget _buildInput() {
-    final pad = MediaQuery.of(context).padding.bottom;
+    final pad    = MediaQuery.of(context).padding.bottom;
     final active = _canSend;
     return Container(
       color: C.card,
       child: Column(children: [
         Divider(height: 1, color: C.border),
-        // Image previews
         if (_pendingImages.isNotEmpty)
           SizedBox(height: 72,
             child: ListView.builder(
@@ -1570,15 +1835,11 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
                       image: DecorationImage(image: FileImage(img.file), fit: BoxFit.cover),
                     ),
                     child: img.isLoading
-                        ? Container(
-                            decoration: BoxDecoration(color: Colors.black.withOpacity(0.38),
-                                borderRadius: BorderRadius.circular(10)),
+                        ? Container(decoration: BoxDecoration(color: Colors.black.withOpacity(0.38), borderRadius: BorderRadius.circular(10)),
                             child: const Center(child: SizedBox(width: 18, height: 18,
                                 child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))))
                         : img.isError
-                            ? Container(
-                                decoration: BoxDecoration(color: C.red.withOpacity(0.3),
-                                    borderRadius: BorderRadius.circular(10)),
+                            ? Container(decoration: BoxDecoration(color: C.red.withOpacity(0.3), borderRadius: BorderRadius.circular(10)),
                                 child: const Center(child: Icon(Icons.error_outline, color: Colors.white, size: 20)))
                             : Align(alignment: Alignment.bottomRight,
                                 child: Container(width: 15, height: 15, margin: const EdgeInsets.all(3),
@@ -1587,41 +1848,28 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
                   ),
                   if (!img.isLoading)
                     Positioned(top: -6, right: 2,
-                      child: GestureDetector(
-                        onTap: () => setState(() => _pendingImages.removeAt(i)),
+                      child: GestureDetector(onTap: () => setState(() => _pendingImages.removeAt(i)),
                         child: Container(width: 18, height: 18,
                           decoration: BoxDecoration(color: C.red, shape: BoxShape.circle),
-                          child: const Icon(Icons.close, size: 11, color: Colors.white)),
-                      )),
+                          child: const Icon(Icons.close, size: 11, color: Colors.white)))),
                 ]);
               },
-            ),
-          ),
+            )),
         Padding(
           padding: EdgeInsets.fromLTRB(12, 8, 12, pad + 6),
           child: Container(
-            decoration: BoxDecoration(
-                color: C.bg, borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: C.border)),
+            decoration: BoxDecoration(color: C.bg, borderRadius: BorderRadius.circular(18), border: Border.all(color: C.border)),
             child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Tooltip(
-                message: 'Attach image',
-                child: Padding(
-                  padding: const EdgeInsets.only(left: 8, bottom: 7),
+              Tooltip(message: 'Attach image',
+                child: Padding(padding: const EdgeInsets.only(left: 8, bottom: 7),
                   child: Material(color: Colors.transparent,
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(9), onTap: _pickImages,
+                    child: InkWell(borderRadius: BorderRadius.circular(9), onTap: _pickImages,
                       child: Container(width: 32, height: 32,
-                        decoration: BoxDecoration(color: C.accentL, borderRadius: BorderRadius.circular(9)),
-                        child: Icon(Icons.image_outlined, color: C.accent, size: 16)),
-                    ),
-                  ),
-                ),
-              ),
+                          decoration: BoxDecoration(color: C.accentL, borderRadius: BorderRadius.circular(9)),
+                          child: Icon(Icons.image_outlined, color: C.accent, size: 16)))))),
               const SizedBox(width: 8),
               Expanded(child: TextField(
-                controller: _inputCtrl,
-                enabled: !_isGenerating,
+                controller: _inputCtrl, enabled: !_isGenerating,
                 maxLines: 5, minLines: 1,
                 style: TextStyle(fontSize: 14.5, color: C.ink),
                 textInputAction: TextInputAction.newline,
@@ -1632,10 +1880,8 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
                   contentPadding: const EdgeInsets.symmetric(vertical: 9),
                 ),
               )),
-              Tooltip(
-                message: _isGenerating ? 'Stop' : 'Send message',
-                child: Padding(
-                  padding: const EdgeInsets.only(right: 7, bottom: 7),
+              Tooltip(message: _isGenerating ? 'Stop' : 'Send message',
+                child: Padding(padding: const EdgeInsets.only(right: 7, bottom: 7),
                   child: GestureDetector(
                     onTap: _isGenerating ? () => setState(() => _stopRequested = true) : _send,
                     child: AnimatedContainer(
@@ -1649,19 +1895,14 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
                         color: (!_isGenerating && !active) ? C.ink2.withOpacity(0.3) : null,
                         borderRadius: BorderRadius.circular(9),
                       ),
-                      child: Icon(
-                        _isGenerating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
-                        color: Colors.white, size: 18),
-                    ),
-                  ),
-                ),
-              ),
+                      child: Icon(_isGenerating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+                          color: Colors.white, size: 18))))),
             ]),
           ),
         ),
         Padding(
           padding: EdgeInsets.only(bottom: pad > 0 ? 2 : 6),
-          child: Text('SkyGen can make mistake, double check output',
+          child: Text(AppConfig.mistakeTag,
               style: TextStyle(fontSize: 10, color: C.ink2),
               textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis),
         ),
@@ -1670,14 +1911,285 @@ Rules: 20–150 characters per fact. Only genuinely useful long-term facts. One 
   }
 }
 
-// ═══════════════════════════════════════════════════
-// 10. SETTINGS SHEET
-// ═══════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
+// § 14. AUTH PAGE (Login / Register)
+// ════════════════════════════════════════════════════════════
+
+class _AuthPage extends StatefulWidget {
+  final bool startWithLogin;
+  final VoidCallback onSuccess;
+  const _AuthPage({required this.startWithLogin, required this.onSuccess});
+  @override
+  State<_AuthPage> createState() => _AuthPageState();
+}
+
+class _AuthPageState extends State<_AuthPage> with SingleTickerProviderStateMixin {
+  late bool _isLogin;
+  final _nameCtrl  = TextEditingController();
+  final _emailCtrl = TextEditingController();
+  final _passCtrl  = TextEditingController();
+  bool _loading    = false;
+  bool _showPass   = false;
+  String _error    = '';
+
+  late AnimationController _animCtrl;
+  late Animation<double>   _fadeAnim;
+
+  @override
+  void initState() {
+    super.initState();
+    _isLogin = widget.startWithLogin;
+    _animCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 350));
+    _fadeAnim = CurvedAnimation(parent: _animCtrl, curve: Curves.easeOut);
+    _animCtrl.forward();
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose(); _emailCtrl.dispose(); _passCtrl.dispose();
+    _animCtrl.dispose();
+    super.dispose();
+  }
+
+  void _toggle() {
+    _animCtrl.reverse().then((_) {
+      setState(() { _isLogin = !_isLogin; _error = ''; });
+      _animCtrl.forward();
+    });
+  }
+
+  Future<void> _submit() async {
+    final name  = _nameCtrl.text.trim();
+    final email = _emailCtrl.text.trim();
+    final pass  = _passCtrl.text.trim();
+    if (!_isLogin && name.isEmpty) { setState(() => _error = 'Please enter your name.'); return; }
+    if (email.isEmpty) { setState(() => _error = 'Please enter your email.'); return; }
+    if (pass.length < 6) { setState(() => _error = 'Password must be at least 6 characters.'); return; }
+
+    setState(() { _loading = true; _error = ''; });
+    final err = _isLogin
+        ? await AuthService.login(email, pass)
+        : await AuthService.register(name, email, pass);
+    if (!mounted) return;
+    setState(() => _loading = false);
+    if (err != null) { setState(() => _error = err); }
+    else { widget.onSuccess(); }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: C.bg,
+      appBar: AppBar(
+        backgroundColor: C.bg, elevation: 0,
+        leading: IconButton(icon: Icon(Icons.arrow_back_rounded, color: C.ink),
+            onPressed: () => Navigator.pop(context)),
+      ),
+      body: FadeTransition(
+        opacity: _fadeAnim,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(24, 20, 24, 40),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.center, children: [
+            _LogoCircle(size: 72),
+            const SizedBox(height: 16),
+            Text(AppConfig.appName, style: TextStyle(
+                fontSize: 22, fontWeight: FontWeight.w800, color: C.ink)),
+            const SizedBox(height: 4),
+            Text(_isLogin ? 'Welcome back! Please log in.' : 'Create your account.',
+                style: TextStyle(fontSize: 13, color: C.ink2)),
+            const SizedBox(height: 32),
+
+            if (!_isLogin) ...[
+              _inputField(ctrl: _nameCtrl, hint: 'Full Name', icon: Icons.person_outline_rounded),
+              const SizedBox(height: 12),
+            ],
+            _inputField(ctrl: _emailCtrl, hint: 'Email Address', icon: Icons.email_outlined,
+                type: TextInputType.emailAddress),
+            const SizedBox(height: 12),
+            _inputField(ctrl: _passCtrl, hint: 'Password', icon: Icons.lock_outline_rounded,
+                obscure: !_showPass,
+                suffix: IconButton(
+                  icon: Icon(_showPass ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+                      color: C.ink2, size: 20),
+                  onPressed: () => setState(() => _showPass = !_showPass),
+                )),
+
+            if (_error.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Container(padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: C.red.withOpacity(0.08), borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: C.red.withOpacity(0.2))),
+                child: Text(_error, style: TextStyle(color: C.red, fontSize: 13))),
+            ],
+
+            const SizedBox(height: 20),
+            SizedBox(width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _loading ? null : _submit,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: C.accent, elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                child: _loading
+                    ? const SizedBox(width: 20, height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : Text(_isLogin ? 'Log In' : 'Create Account',
+                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white)),
+              ),
+            ),
+
+            const SizedBox(height: 20),
+            GestureDetector(
+              onTap: _toggle,
+              child: RichText(text: TextSpan(
+                style: TextStyle(fontSize: 13, color: C.ink2),
+                children: [
+                  TextSpan(text: _isLogin ? "Don't have an account? " : 'Already have an account? '),
+                  TextSpan(
+                    text: _isLogin ? 'Register' : 'Log In',
+                    style: TextStyle(color: C.accent, fontWeight: FontWeight.w700),
+                  ),
+                ],
+              )),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _inputField({
+    required TextEditingController ctrl,
+    required String hint,
+    required IconData icon,
+    TextInputType? type,
+    bool obscure = false,
+    Widget? suffix,
+  }) {
+    return Container(
+      decoration: BoxDecoration(color: C.card, borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: C.border)),
+      child: Row(children: [
+        Padding(padding: const EdgeInsets.only(left: 14),
+            child: Icon(icon, color: C.ink2, size: 18)),
+        Expanded(child: TextField(
+          controller: ctrl, obscureText: obscure, keyboardType: type,
+          style: TextStyle(fontSize: 14, color: C.ink),
+          decoration: InputDecoration(
+            hintText: hint, hintStyle: TextStyle(color: C.ink2, fontSize: 14),
+            border: InputBorder.none, contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+          ),
+        )),
+        if (suffix != null) suffix,
+      ]),
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// § 15. PROFILE SHEET
+// ════════════════════════════════════════════════════════════
+
+class _ProfileSheet extends StatefulWidget {
+  final VoidCallback onLoggedOut;
+  final VoidCallback onNameUpdated;
+  const _ProfileSheet({required this.onLoggedOut, required this.onNameUpdated});
+  @override
+  State<_ProfileSheet> createState() => _ProfileSheetState();
+}
+
+class _ProfileSheetState extends State<_ProfileSheet> {
+  final _nameCtrl = TextEditingController(text: AuthService.current?.name ?? '');
+  bool _saving    = false;
+
+  @override
+  void dispose() { _nameCtrl.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(color: C.card,
+          borderRadius: const BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20))),
+      padding: EdgeInsets.fromLTRB(20, 0, 20, MediaQuery.of(context).padding.bottom + 20),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Container(margin: const EdgeInsets.only(top: 10, bottom: 16), width: 36, height: 4,
+            decoration: BoxDecoration(color: C.border, borderRadius: BorderRadius.circular(3))),
+
+        Row(children: [
+          Text('Profile', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: C.ink)),
+          const Spacer(),
+          GestureDetector(onTap: () => Navigator.pop(context),
+              child: Container(width: 30, height: 30,
+                decoration: BoxDecoration(color: C.bg, borderRadius: BorderRadius.circular(8)),
+                child: Icon(Icons.close_rounded, size: 16, color: C.ink2))),
+        ]),
+        const SizedBox(height: 20),
+
+        Align(alignment: Alignment.centerLeft,
+            child: Text('Full Name', style: TextStyle(fontSize: 12, color: C.ink2, fontWeight: FontWeight.w600))),
+        const SizedBox(height: 6),
+        Container(
+          decoration: BoxDecoration(color: C.bg, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+          child: TextField(
+            controller: _nameCtrl, maxLength: 50, maxLines: 1,
+            style: TextStyle(fontSize: 14, color: C.ink),
+            decoration: InputDecoration(
+              counterText: '', hintText: 'Your name', hintStyle: TextStyle(color: C.ink2),
+              border: InputBorder.none, contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Align(alignment: Alignment.centerLeft,
+            child: Text('Email: ${AuthService.current?.email ?? ""}',
+                style: TextStyle(fontSize: 12, color: C.ink2))),
+
+        const SizedBox(height: 20),
+        SizedBox(width: double.infinity,
+          child: ElevatedButton(
+            onPressed: _saving ? null : () async {
+              final n = _nameCtrl.text.trim();
+              if (n.isEmpty) return;
+              setState(() => _saving = true);
+              await AuthService.updateName(n);
+              if (mounted) { setState(() => _saving = false); widget.onNameUpdated(); Navigator.pop(context); }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: C.accent, elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                padding: const EdgeInsets.symmetric(vertical: 13)),
+            child: _saving
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Text('Save Changes', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 14)),
+          ),
+        ),
+        const SizedBox(height: 10),
+        SizedBox(width: double.infinity,
+          child: OutlinedButton(
+            onPressed: widget.onLoggedOut,
+            style: OutlinedButton.styleFrom(side: BorderSide(color: C.red.withOpacity(0.4)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                padding: const EdgeInsets.symmetric(vertical: 13)),
+            child: Text('Log Out', style: TextStyle(color: C.red, fontWeight: FontWeight.w700, fontSize: 14)),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// § 16. SETTINGS SHEET
+// ════════════════════════════════════════════════════════════
+
 class _SettingsSheet extends StatefulWidget {
   final List<String>       aiMemory;
+  final bool               hasUpdate;
   final void Function(List<String>) onClearMemory;
   final VoidCallback       onClearAllChats;
-  const _SettingsSheet({required this.aiMemory, required this.onClearMemory, required this.onClearAllChats});
+  final VoidCallback       onLoggedOut;
+  const _SettingsSheet({required this.aiMemory, required this.hasUpdate,
+      required this.onClearMemory, required this.onClearAllChats, required this.onLoggedOut});
   @override
   State<_SettingsSheet> createState() => _SettingsSheetState();
 }
@@ -1686,20 +2198,19 @@ class _SettingsSheetState extends State<_SettingsSheet> {
   bool _showMemory = false;
   bool _showAbout  = false;
   bool _showDev    = false;
+  bool _showUpdate = false;
 
   @override
   Widget build(BuildContext context) {
     if (_showMemory) return _memoryPage();
     if (_showAbout)  return _aboutPage();
     if (_showDev)    return _devPage();
+    if (_showUpdate) return _updatePage();
     return _mainSheet();
   }
 
-  Widget _handle() => Container(
-    margin: const EdgeInsets.only(top: 10, bottom: 4),
-    width: 36, height: 4,
-    decoration: BoxDecoration(color: C.border, borderRadius: BorderRadius.circular(3)),
-  );
+  Widget _handle() => Container(margin: const EdgeInsets.only(top: 10, bottom: 4),
+      width: 36, height: 4, decoration: BoxDecoration(color: C.border, borderRadius: BorderRadius.circular(3)));
 
   Widget _mainSheet() {
     return Container(
@@ -1707,19 +2218,15 @@ class _SettingsSheetState extends State<_SettingsSheet> {
           borderRadius: const BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20))),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         _handle(),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 6, 16, 10),
+        Padding(padding: const EdgeInsets.fromLTRB(20, 6, 16, 10),
           child: Row(children: [
             Text('Settings', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: C.ink)),
             const Spacer(),
-            GestureDetector(
-              onTap: () { HapticFeedback.lightImpact(); Navigator.pop(context); },
+            GestureDetector(onTap: () { HapticFeedback.lightImpact(); Navigator.pop(context); },
               child: Container(width: 30, height: 30,
                 decoration: BoxDecoration(color: C.bg, borderRadius: BorderRadius.circular(8)),
-                child: Icon(Icons.close_rounded, size: 16, color: C.ink2)),
-            ),
-          ]),
-        ),
+                child: Icon(Icons.close_rounded, size: 16, color: C.ink2))),
+          ])),
         Divider(height: 1, color: C.border),
         _tile(icon: Icons.memory_rounded, title: 'Manage Memory',
             onTap: () { HapticFeedback.lightImpact(); setState(() => _showMemory = true); }),
@@ -1729,20 +2236,34 @@ class _SettingsSheetState extends State<_SettingsSheet> {
             onTap: () { HapticFeedback.lightImpact(); setState(() => _showDev = true); }),
         _tile(icon: Icons.info_outline_rounded, title: 'About App',
             onTap: () { HapticFeedback.lightImpact(); setState(() => _showAbout = true); }),
+        if (widget.hasUpdate)
+          _tile(icon: Icons.system_update_alt_rounded, title: 'Update Available',
+              badge: true,
+              onTap: () { HapticFeedback.lightImpact(); setState(() => _showUpdate = true); })
+        else
+          _tile(icon: Icons.system_update_alt_rounded, title: 'Check for Updates',
+              subtitle: 'v$kAppVersion — Up to date',
+              onTap: () { HapticFeedback.lightImpact(); setState(() => _showUpdate = true); }),
         SizedBox(height: MediaQuery.of(context).padding.bottom + 16),
       ]),
     );
   }
 
-  Widget _tile({required IconData icon, required String title, required VoidCallback onTap}) {
+  Widget _tile({required IconData icon, required String title,
+      String? subtitle, bool badge = false, required VoidCallback onTap}) {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
         child: Row(children: [
           Icon(icon, size: 18, color: C.ink2),
           const SizedBox(width: 14),
-          Expanded(child: Text(title, style: TextStyle(fontSize: 14, color: C.ink, fontWeight: FontWeight.w500))),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title, style: TextStyle(fontSize: 14, color: C.ink, fontWeight: FontWeight.w500)),
+            if (subtitle != null) Text(subtitle, style: TextStyle(fontSize: 11, color: C.ink2)),
+          ])),
+          if (badge) Container(width: 8, height: 8, margin: const EdgeInsets.only(right: 6),
+              decoration: const BoxDecoration(color: Color(0xFFEF4444), shape: BoxShape.circle)),
           Icon(Icons.chevron_right_rounded, size: 18, color: C.ink2),
         ]),
       ),
@@ -1750,22 +2271,21 @@ class _SettingsSheetState extends State<_SettingsSheet> {
   }
 
   Widget _subPageShell({required String title, required Widget child,
-      required VoidCallback onBack, double heightFactor = 0.65}) {
+      required VoidCallback onBack, double hf = 0.65, Widget? action}) {
     return Container(
-      height: MediaQuery.of(context).size.height * heightFactor,
+      height: MediaQuery.of(context).size.height * hf,
       decoration: BoxDecoration(color: C.card,
           borderRadius: const BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20))),
       child: Column(children: [
         _handle(),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
+        Padding(padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
           child: Row(children: [
-            GestureDetector(onTap: onBack,
-                child: Icon(Icons.arrow_back_rounded, color: C.ink, size: 22)),
+            GestureDetector(onTap: onBack, child: Icon(Icons.arrow_back_rounded, color: C.ink, size: 22)),
             const SizedBox(width: 12),
             Text(title, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: C.ink)),
-          ]),
-        ),
+            const Spacer(),
+            if (action != null) action,
+          ])),
         Divider(height: 1, color: C.border),
         Expanded(child: child),
         SizedBox(height: MediaQuery.of(context).padding.bottom + 12),
@@ -1776,8 +2296,14 @@ class _SettingsSheetState extends State<_SettingsSheet> {
   Widget _memoryPage() {
     final mem = widget.aiMemory;
     return _subPageShell(
-      title: 'Manage Memory',
+      title: 'Manage Memory', hf: 0.65,
       onBack: () => setState(() => _showMemory = false),
+      action: mem.isNotEmpty ? GestureDetector(
+        onTap: () { widget.onClearMemory([]); setState(() {}); HapticFeedback.mediumImpact(); },
+        child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(color: C.red.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
+          child: Text('Clear All', style: TextStyle(color: C.red, fontSize: 12, fontWeight: FontWeight.w600))),
+      ) : null,
       child: mem.isEmpty
           ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
               Icon(Icons.memory_rounded, color: C.ink2, size: 32),
@@ -1788,102 +2314,72 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                 child: Text('SkyGen will remember important info from your chats.',
                     style: TextStyle(color: C.ink2, fontSize: 12), textAlign: TextAlign.center)),
             ]))
-          : Column(children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-                child: Row(children: [
-                  Text('${mem.length} item${mem.length > 1 ? "s" : ""}',
-                      style: TextStyle(fontSize: 12, color: C.ink2)),
-                  const Spacer(),
+          : ListView.separated(
+              padding: const EdgeInsets.all(16),
+              itemCount: mem.length,
+              separatorBuilder: (_, __) => Divider(height: 1, color: C.border),
+              itemBuilder: (_, i) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Container(width: 6, height: 6, margin: const EdgeInsets.only(top: 6, right: 12),
+                      decoration: BoxDecoration(color: C.accent, shape: BoxShape.circle)),
+                  Expanded(child: Text(mem[i], style: TextStyle(fontSize: 13, color: C.ink, height: 1.4))),
                   GestureDetector(
-                    onTap: () { widget.onClearMemory([]); setState(() {}); HapticFeedback.mediumImpact(); },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                          color: C.red.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
-                      child: Text('Clear All', style: TextStyle(color: C.red, fontSize: 12, fontWeight: FontWeight.w600)),
-                    ),
-                  ),
+                    onTap: () {
+                      HapticFeedback.lightImpact();
+                      final upd = List<String>.from(mem)..removeAt(i);
+                      widget.onClearMemory(upd);
+                      setState(() {});
+                    },
+                    child: Icon(Icons.close_rounded, size: 16, color: C.ink2)),
                 ]),
               ),
-              Expanded(child: ListView.separated(
-                padding: const EdgeInsets.all(16),
-                itemCount: mem.length,
-                separatorBuilder: (_, __) => Divider(height: 1, color: C.border),
-                itemBuilder: (_, i) => AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Container(
-                        width: 6, height: 6, margin: const EdgeInsets.only(top: 6, right: 12),
-                        decoration: BoxDecoration(color: C.accent, shape: BoxShape.circle),
-                      ),
-                      Expanded(child: Text(mem[i], style: TextStyle(fontSize: 13, color: C.ink, height: 1.4))),
-                      GestureDetector(
-                        onTap: () {
-                          HapticFeedback.lightImpact();
-                          final upd = List<String>.from(mem)..removeAt(i);
-                          widget.onClearMemory(upd);
-                          setState(() {});
-                        },
-                        child: Icon(Icons.close_rounded, size: 16, color: C.ink2),
-                      ),
-                    ]),
-                  ),
-                ),
-              )),
-            ]),
+            ),
     );
   }
 
   Widget _aboutPage() {
-    return _subPageShell(
-      title: 'About App', heightFactor: 0.72,
-      onBack: () => setState(() => _showAbout = false),
+    return _subPageShell(title: 'About App', hf: 0.72, onBack: () => setState(() => _showAbout = false),
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Center(child: _LogoCircle(size: 64)),
           const SizedBox(height: 14),
-          Center(child: Text('SkyGen', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: C.ink))),
-          Center(child: Text('English AI Tutor', style: TextStyle(fontSize: 12, color: C.ink2))),
+          Center(child: Text(AppConfig.appName, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: C.ink))),
+          Center(child: Text(AppConfig.subTitle, style: TextStyle(fontSize: 12, color: C.ink2))),
           const SizedBox(height: 20),
-          _aboutItem(Icons.school_rounded, 'What is SkyGen?',
-              'SkyGen is a powerful AI-powered English tutor built specifically for Bangladeshi students. It helps with grammar, translation, vocabulary, writing, and exam prep — all in one place.'),
-          _aboutItem(Icons.auto_fix_high_rounded, 'Key Features',
+          _aItem(Icons.school_rounded, 'What is ${AppConfig.appName}?',
+              '${AppConfig.appName} is a powerful AI-powered English tutor built specifically for Bangladeshi students. Grammar, translation, vocabulary, writing, and exam prep — all in one place.'),
+          _aItem(Icons.auto_fix_high_rounded, 'Key Features',
               '• Grammar correction & explanation\n• English ↔ Bengali translation\n• All 12 tenses with full breakdown\n• Essay, letter & application writing\n• SSC / HSC board exam preparation\n• Image text analysis (OCR)\n• Voice reading (TTS)\n• Smart AI memory across sessions'),
-          _aboutItem(Icons.memory_rounded, 'Smart Memory',
-              'SkyGen remembers important information about you — like your class, learning goals, and preferences — so every conversation feels personalized.'),
-          _aboutItem(Icons.language_rounded, 'Language Support',
-              'SkyGen mirrors your language naturally. Chat in Bengali, English, or Banglish — SkyGen will respond the same way.'),
-          _aboutItem(Icons.verified_rounded, 'Accuracy',
-              'While SkyGen strives for accuracy, it can occasionally make mistakes. Always double-check important answers, especially for exams.'),
+          _aItem(Icons.memory_rounded, 'Smart Memory',
+              '${AppConfig.appName} remembers important info about you — your class, learning goals, preferences — so every session feels personalized.'),
+          _aItem(Icons.language_rounded, 'Language Support',
+              'Chat in Bengali, English, or Banglish — ${AppConfig.appName} mirrors your language naturally.'),
+          _aItem(Icons.verified_rounded, 'Note', 'While ${AppConfig.appName} is accurate, it can make mistakes. Always verify important answers for exams.'),
           const SizedBox(height: 8),
-          Center(child: Text('Version 1.0.0', style: TextStyle(fontSize: 11, color: C.ink2))),
+          Center(child: Text('Version $kAppVersion', style: TextStyle(fontSize: 11, color: C.ink2))),
         ]),
       ),
     );
   }
 
   Widget _devPage() {
-    return _subPageShell(
-      title: 'Developer', heightFactor: 0.75,
-      onBack: () => setState(() => _showDev = false),
+    return _subPageShell(title: 'Developer', hf: 0.75, onBack: () => setState(() => _showDev = false),
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Center(child: _LogoCircle(size: 64, url: kDevUrl)),
+          Center(child: _LogoCircle(size: 64, urlOverride: AppConfig.devLogoUrl)),
           const SizedBox(height: 14),
           Center(child: Text('MD. Jaid Bin Siyam', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: C.ink))),
           Center(child: Text('Student & Developer · Hyper Squad', style: TextStyle(fontSize: 12, color: C.ink2))),
           const SizedBox(height: 22),
-          _aboutItem(Icons.person_rounded, 'About',
-              'A passionate developer from Bangladesh, currently a student. Builds apps, websites, Telegram bots, and automation tools alongside his studies — driven by curiosity and a love for technology.'),
-          _aboutItem(Icons.code_rounded, 'What he does',
+          _aItem(Icons.person_rounded, 'About',
+              'A passionate developer from Bangladesh, student by day and builder by night. Creates apps, websites, Telegram bots, and automation tools — driven by curiosity and love for tech.'),
+          _aItem(Icons.code_rounded, 'What he builds',
               '• Flutter & mobile app development\n• Web development & backend systems\n• Telegram bot development\n• Automation & scripting\n• AI-powered tools and products'),
-          _aboutItem(Icons.stars_rounded, 'SkyGen',
-              'SkyGen is one of his personal projects — built to help fellow students master English with the help of AI. Every feature is crafted with care.'),
+          _aItem(Icons.stars_rounded, 'SkyGen',
+              'SkyGen is a personal project built to help fellow students master English with AI. Every detail is crafted with care.'),
           const SizedBox(height: 16),
           Text('Contact', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: C.ink)),
           const SizedBox(height: 10),
@@ -1895,9 +2391,14 @@ class _SettingsSheetState extends State<_SettingsSheet> {
     );
   }
 
-  Widget _aboutItem(IconData icon, String title, String desc) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
+  Widget _updatePage() {
+    return _subPageShell(title: 'Updates', hf: 0.65, onBack: () => setState(() => _showUpdate = false),
+      child: _UpdateContent(fromSettings: true),
+    );
+  }
+
+  Widget _aItem(IconData icon, String title, String desc) {
+    return Padding(padding: const EdgeInsets.only(bottom: 16),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Container(width: 34, height: 34,
           decoration: BoxDecoration(color: C.accentL, borderRadius: BorderRadius.circular(9)),
@@ -1908,13 +2409,11 @@ class _SettingsSheetState extends State<_SettingsSheet> {
           const SizedBox(height: 3),
           Text(desc, style: TextStyle(fontSize: 12, color: C.ink2, height: 1.5)),
         ])),
-      ]),
-    );
+      ]));
   }
 
   Widget _contactBtn(IconData icon, String label, String url) {
-    return Material(
-      color: C.bg, borderRadius: BorderRadius.circular(12),
+    return Material(color: C.bg, borderRadius: BorderRadius.circular(12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: () async {
@@ -1922,50 +2421,163 @@ class _SettingsSheetState extends State<_SettingsSheet> {
           final uri = Uri.parse(url);
           if (await canLaunchUrl(uri)) launchUrl(uri, mode: LaunchMode.externalApplication);
         },
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: BoxDecoration(
-              border: Border.all(color: C.border), borderRadius: BorderRadius.circular(12)),
+        child: Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(border: Border.all(color: C.border), borderRadius: BorderRadius.circular(12)),
           child: Row(children: [
             Icon(icon, size: 18, color: C.accent),
             const SizedBox(width: 12),
             Text(label, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: C.ink)),
             const Spacer(),
             Icon(Icons.open_in_new_rounded, size: 14, color: C.ink2),
+          ])),
+      ));
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// § 17. UPDATE SHEET / CONTENT
+// ════════════════════════════════════════════════════════════
+
+class _UpdateSheet extends StatelessWidget {
+  final VoidCallback onDismiss;
+  const _UpdateSheet({required this.onDismiss});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(color: C.card,
+          borderRadius: const BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20))),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Container(margin: const EdgeInsets.only(top: 10, bottom: 4), width: 36, height: 4,
+            decoration: BoxDecoration(color: C.border, borderRadius: BorderRadius.circular(3))),
+        Padding(padding: const EdgeInsets.fromLTRB(20, 8, 16, 4),
+          child: Row(children: [
+            Text('Update', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: C.ink)),
+            const Spacer(),
+            GestureDetector(onTap: onDismiss,
+              child: Container(width: 30, height: 30,
+                decoration: BoxDecoration(color: C.bg, borderRadius: BorderRadius.circular(8)),
+                child: Icon(Icons.close_rounded, size: 16, color: C.ink2))),
+          ])),
+        Padding(padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+          child: Text('Features', style: TextStyle(fontSize: 12, color: C.ink2, fontWeight: FontWeight.w600))),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+          child: MarkdownBody(
+            data: AppConfig.updateNotes,
+            styleSheet: MarkdownStyleSheet(
+              p: TextStyle(fontSize: 13, color: C.ink, height: 1.5),
+              listBullet: TextStyle(fontSize: 13, color: C.ink),
+            ),
+          ),
+        ),
+        Padding(
+          padding: EdgeInsets.fromLTRB(20, 16, 20, MediaQuery.of(context).padding.bottom + 20),
+          child: Row(children: [
+            Expanded(child: OutlinedButton.icon(
+              onPressed: onDismiss,
+              icon: const Icon(Icons.schedule_rounded, size: 16),
+              label: const Text('Later'),
+              style: OutlinedButton.styleFrom(side: BorderSide(color: C.border),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(vertical: 12)),
+            )),
+            const SizedBox(width: 12),
+            Expanded(child: ElevatedButton.icon(
+              onPressed: () async {
+                final uri = Uri.parse(AppConfig.downloadUrl);
+                if (await canLaunchUrl(uri)) launchUrl(uri, mode: LaunchMode.externalApplication);
+              },
+              icon: const Icon(Icons.download_rounded, size: 16),
+              label: const Text('Download'),
+              style: ElevatedButton.styleFrom(backgroundColor: C.accent, elevation: 0,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(vertical: 12)),
+            )),
           ]),
         ),
-      ),
+      ]),
     );
   }
 }
 
-// ═══════════════════════════════════════════════════
-// 11. SCROLL FAB
-// ═══════════════════════════════════════════════════
+class _UpdateContent extends StatelessWidget {
+  final bool fromSettings;
+  const _UpdateContent({this.fromSettings = false});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!AppConfig.hasUpdate) {
+      return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Icon(Icons.check_circle_rounded, color: C.green, size: 48),
+        const SizedBox(height: 12),
+        Text('You\'re up to date!', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
+        const SizedBox(height: 6),
+        Text('Current version: v$kAppVersion', style: TextStyle(fontSize: 13, color: C.ink2)),
+      ]));
+    }
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(color: C.accent.withOpacity(0.1), borderRadius: BorderRadius.circular(20)),
+            child: Text('v${AppConfig.remoteVersion}', style: TextStyle(color: C.accent, fontSize: 12, fontWeight: FontWeight.w700))),
+          const SizedBox(width: 8),
+          Text('New version available', style: TextStyle(fontSize: 13, color: C.ink2)),
+        ]),
+        const SizedBox(height: 16),
+        Text('What\'s new', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: C.ink)),
+        const SizedBox(height: 8),
+        MarkdownBody(
+          data: AppConfig.updateNotes,
+          styleSheet: MarkdownStyleSheet(
+            p: TextStyle(fontSize: 13, color: C.ink, height: 1.5),
+            listBullet: TextStyle(fontSize: 13, color: C.ink),
+          ),
+        ),
+        const SizedBox(height: 20),
+        SizedBox(width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: () async {
+              final uri = Uri.parse(AppConfig.downloadUrl);
+              if (await canLaunchUrl(uri)) launchUrl(uri, mode: LaunchMode.externalApplication);
+            },
+            icon: const Icon(Icons.download_rounded, size: 16),
+            label: const Text('Download Update'),
+            style: ElevatedButton.styleFrom(backgroundColor: C.accent, elevation: 0,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                padding: const EdgeInsets.symmetric(vertical: 13)),
+          )),
+      ]),
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// § 18. SCROLL FAB
+// ════════════════════════════════════════════════════════════
+
 class _ScrollFab extends StatelessWidget {
   final VoidCallback onTap;
   const _ScrollFab({required this.onTap});
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 40, height: 40,
-        decoration: BoxDecoration(
-          color: C.card, shape: BoxShape.circle,
+    return GestureDetector(onTap: onTap,
+      child: Container(width: 40, height: 40,
+        decoration: BoxDecoration(color: C.card, shape: BoxShape.circle,
           border: Border.all(color: C.border, width: 1.5),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1),
-              blurRadius: 10, offset: const Offset(0, 2))],
-        ),
-        child: Icon(Icons.keyboard_double_arrow_down_rounded, color: C.ink, size: 20),
-      ),
-    );
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10, offset: const Offset(0, 2))]),
+        child: Icon(Icons.keyboard_double_arrow_down_rounded, color: C.ink, size: 20)));
   }
 }
 
-// ═══════════════════════════════════════════════════
-// 12. IMAGE VIEWER
-// ═══════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
+// § 19. IMAGE VIEWER
+// ════════════════════════════════════════════════════════════
+
 class _ImageViewerPage extends StatefulWidget {
   final String imageUrl;
   const _ImageViewerPage({required this.imageUrl});
@@ -1980,25 +2592,22 @@ class _ImageViewerState extends State<_ImageViewerPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(backgroundColor: Colors.black,
-          iconTheme: const IconThemeData(color: Colors.white),
-          leading: IconButton(icon: const Icon(Icons.close_rounded),
-              onPressed: () => Navigator.pop(context))),
+      appBar: AppBar(backgroundColor: Colors.black, iconTheme: const IconThemeData(color: Colors.white),
+          leading: IconButton(icon: const Icon(Icons.close_rounded), onPressed: () => Navigator.pop(context))),
       body: Center(child: InteractiveViewer(
         transformationController: _tc, minScale: 0.5, maxScale: 5.0,
-        child: CachedNetworkImage(
-          imageUrl: widget.imageUrl, fit: BoxFit.contain,
+        child: CachedNetworkImage(imageUrl: widget.imageUrl, fit: BoxFit.contain,
           placeholder: (_, __) => const Center(child: CircularProgressIndicator(color: Colors.white)),
-          errorWidget: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white, size: 48),
-        ),
+          errorWidget: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white, size: 48)),
       )),
     );
   }
 }
 
-// ═══════════════════════════════════════════════════
-// 13. BUBBLE WIDGET
-// ═══════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
+// § 20. BUBBLE WIDGET
+// ════════════════════════════════════════════════════════════
+
 class _BubbleWidget extends StatefulWidget {
   final ChatMsg msg;
   final bool    isPlayingTTS;
@@ -2026,9 +2635,9 @@ class _BubbleState extends State<_BubbleWidget> with SingleTickerProviderStateMi
   @override
   void initState() {
     super.initState();
-    _fc = AnimationController(vsync: this, duration: const Duration(milliseconds: 250));
+    _fc = AnimationController(vsync: this, duration: const Duration(milliseconds: 200));
     _fa = CurvedAnimation(parent: _fc, curve: Curves.easeOut);
-    // Show actions immediately for already-completed messages
+    // Already-completed messages: show actions immediately
     if (widget.msg.type == MsgType.ai && widget.msg.status == GenStatus.completed) {
       _fc.value = 1.0;
     }
@@ -2037,6 +2646,7 @@ class _BubbleState extends State<_BubbleWidget> with SingleTickerProviderStateMi
   @override
   void didUpdateWidget(_BubbleWidget old) {
     super.didUpdateWidget(old);
+    // When stream ends and status becomes completed → fade in actions immediately
     if (widget.msg.status == GenStatus.completed &&
         old.msg.status != GenStatus.completed &&
         widget.msg.type == MsgType.ai) {
@@ -2073,24 +2683,16 @@ class _BubbleState extends State<_BubbleWidget> with SingleTickerProviderStateMi
                 onTap: () => widget.onImageTap(url),
                 child: ClipRRect(borderRadius: BorderRadius.circular(10),
                   child: CachedNetworkImage(imageUrl: url, width: 108, height: 108, fit: BoxFit.cover,
-                    placeholder: (_, __) => Container(width: 108, height: 108, color: C.border))),
-              )).toList(),
-            ),
-          ),
+                      placeholder: (_, __) => Container(width: 108, height: 108, color: C.border))))).toList())),
         if (widget.msg.text.isNotEmpty)
           Container(
             constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.72),
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: C.userBub,
+            decoration: BoxDecoration(color: C.userBub,
               borderRadius: const BorderRadius.only(
                 topLeft: Radius.circular(16), topRight: Radius.circular(4),
-                bottomLeft: Radius.circular(16), bottomRight: Radius.circular(16),
-              ),
-            ),
-            child: Text(widget.msg.text,
-                style: TextStyle(fontSize: 14.5, color: C.ink, height: 1.45)),
-          ),
+                bottomLeft: Radius.circular(16), bottomRight: Radius.circular(16))),
+            child: Text(widget.msg.text, style: TextStyle(fontSize: 14.5, color: C.ink, height: 1.45))),
       ]),
     ))],
   );
@@ -2121,17 +2723,16 @@ class _BubbleState extends State<_BubbleWidget> with SingleTickerProviderStateMi
                 tableHead: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
                 tableBody: const TextStyle(fontSize: 13, height: 1.4),
               ),
-            ),
-          ),
+            )),
         if (widget.msg.status == GenStatus.error)
-          Container(
-            margin: const EdgeInsets.only(top: 6),
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-                color: C.red.withOpacity(0.08), borderRadius: BorderRadius.circular(10),
+          Container(margin: const EdgeInsets.only(top: 6), padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: C.red.withOpacity(0.08), borderRadius: BorderRadius.circular(10),
                 border: Border.all(color: C.red.withOpacity(0.2))),
-            child: Text(widget.msg.text, style: TextStyle(color: C.red, fontSize: 13)),
-          ),
+            child: Text(widget.msg.text, style: TextStyle(color: C.red, fontSize: 13))),
+
+        // ── ACTION BAR ──
+        // FadeTransition driven by _fc which is triggered immediately
+        // when status transitions to completed (via didUpdateWidget)
         if (isDone && widget.msg.text.isNotEmpty)
           FadeTransition(
             opacity: _fa,
@@ -2140,8 +2741,7 @@ class _BubbleState extends State<_BubbleWidget> with SingleTickerProviderStateMi
               child: Row(mainAxisSize: MainAxisSize.min, children: [
                 _aBtn(
                   icon:  _copied ? Icons.check_rounded : Icons.copy_rounded,
-                  color: _copied ? C.green : C.ink2,
-                  tip:   'Copy',
+                  color: _copied ? C.green : C.ink2, tip: 'Copy',
                   onTap: () {
                     widget.onCopy(widget.msg.text);
                     HapticFeedback.lightImpact();
@@ -2158,8 +2758,7 @@ class _BubbleState extends State<_BubbleWidget> with SingleTickerProviderStateMi
                         icon:  widget.isPlayingTTS ? Icons.pause_rounded : Icons.volume_up_rounded,
                         color: widget.isPlayingTTS ? C.accent : C.ink2,
                         tip:   widget.isPlayingTTS ? 'Pause' : 'Listen',
-                        onTap: () => widget.onSpeak(widget.msg.id, widget.msg.text),
-                      ),
+                        onTap: () => widget.onSpeak(widget.msg.id, widget.msg.text)),
                 _aBtn(icon: Icons.thumb_up_rounded,
                     color: widget.msg.liked    ? C.accent : C.ink2, tip: 'Like',
                     onTap: () { widget.onLike(widget.msg.id); HapticFeedback.lightImpact(); }),
@@ -2173,25 +2772,20 @@ class _BubbleState extends State<_BubbleWidget> with SingleTickerProviderStateMi
     ]);
   }
 
-  Widget _aBtn({required IconData icon, required Color color,
-      required String tip, required VoidCallback onTap}) {
-    return Tooltip(
-      message: tip,
+  Widget _aBtn({required IconData icon, required Color color, required String tip, required VoidCallback onTap}) {
+    return Tooltip(message: tip,
       child: Material(color: Colors.transparent,
         child: InkWell(borderRadius: BorderRadius.circular(8), onTap: onTap,
           child: Container(width: 30, height: 30, alignment: Alignment.center,
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 200),
-                child: Icon(icon, key: ValueKey(icon), size: 15, color: color),
-              ))),
-      ),
-    );
+            child: AnimatedSwitcher(duration: const Duration(milliseconds: 200),
+              child: Icon(icon, key: ValueKey(icon), size: 15, color: color))))));
   }
 }
 
-// ═══════════════════════════════════════════════════
-// 14. THINKING DOTS
-// ═══════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
+// § 21. THINKING DOTS
+// ════════════════════════════════════════════════════════════
+
 class _ThinkingDots extends StatefulWidget {
   const _ThinkingDots();
   @override
@@ -2217,17 +2811,15 @@ class _TDState extends State<_ThinkingDots> with SingleTickerProviderStateMixin 
             final t = ((_c.value - i * 0.2) % 1.0).clamp(0.0, 1.0);
             return Transform.translate(
               offset: Offset(0, -sin(t * pi) * 5.0),
-              child: Container(
-                width: 7, height: 7, margin: const EdgeInsets.only(right: 5),
-                decoration: BoxDecoration(
-                  color: C.accent.withOpacity(0.45 + 0.55 * sin(t * pi)),
-                  shape: BoxShape.circle,
-                ),
-              ),
-            );
-          }),
-        ),
-      ),
-    );
+              child: Container(width: 7, height: 7, margin: const EdgeInsets.only(right: 5),
+                decoration: BoxDecoration(color: C.accent.withOpacity(0.45 + 0.55 * sin(t * pi)), shape: BoxShape.circle)));
+          }))));
   }
+}
+
+// ════════════════════════════════════════════════════════════
+// EXTENSION: _LogoCircle with urlOverride helper
+// ════════════════════════════════════════════════════════════
+extension _LogoCircleExt on _LogoCircle {
+  // Already handled via urlOverride param in constructor
 }
