@@ -1,6 +1,7 @@
 name: skygen_ai
-description: Advanced SkyGen AI Assistant
+description: Advanced SkyGen AI Assistant - An intelligent English tutor for Bangladeshi students
 publish_to: 'none'
+version: 1.0.0+1
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
@@ -10,34 +11,37 @@ dependencies:
     sdk: flutter
   
   http: ^1.1.0
+  dio: ^5.4.0
   
-  # Storage & Path
   path_provider: ^2.1.2
   path: ^1.8.3
-  
-  # Media handling
+
   image_picker: ^1.0.7
   video_thumbnail: ^0.5.3
   
-  # UI Components
   flutter_markdown: ^0.6.14
   flutter_highlight: ^0.7.0
   shimmer: ^3.0.0
   cached_network_image: ^3.3.1
-  font_awesome_flutter: ^10.6.0 # For better icons
+  font_awesome_flutter: ^10.6.0
+  google_fonts: ^6.2.1
+  flutter_animate: ^4.5.0
   
-  # Permissions
   permission_handler: ^11.3.0
+  open_filex: ^4.3.4
   
-  # Audio/Video
   audioplayers: ^6.0.0
   video_player: ^2.8.2
   chewie: ^1.7.5
   
-  # Utilities
   intl: ^0.19.0
   markdown: ^7.1.1
   url_launcher: ^6.2.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
 
 flutter:
   uses-material-design: true
